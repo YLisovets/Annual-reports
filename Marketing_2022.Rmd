@@ -1,0 +1,776 @@
+---
+title: "Звіт з маркетингових активностей за 2022р."
+output:
+   html_document:
+     theme: flatly
+     toc: true
+     toc_float: TRUE
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE, out.width = '100%')
+
+library(tidyverse)
+library(lubridate)
+library(timetk)
+library(ggalt)
+library(ggtext)
+
+Sys.setlocale(locale = "uk-UA.UTF-8")
+
+source("script/collect_data.R")
+source("script/functions.R")
+
+date_finish <- as.Date("2023-01-01")
+
+main_color <- RColorBrewer::brewer.pal(name = "Greens", n = 9)[3]
+worst_color <- RColorBrewer::brewer.pal(name = "Set2", n = 8)[2]
+```
+
+```{r}
+# discount_data <- retail_discounts_fn(date_finish - months(12),
+#                                      date_finish) %>% 
+#     left_join(ref_item_ukm, by = c("item" = "item_code")) %>% 
+#     select(-item)
+# 
+# write_rds(discount_data, "data/retail_discount_data.rds")
+retail_discount_data <- read_rds("data/retail_discount_data.rds")
+
+# sale_retail_raw <- sale_retail_data_common_fn(
+#     date_finish + years(2000) - years(1),
+#     date_finish + years(2000))
+# 
+# write_rds(sale_retail_raw, "data/sale_retail_raw.rds")
+sale_retail_raw <- read_rds("data/sale_retail_raw.rds")
+
+sale_retail_data <- sale_retail_raw %>% 
+    mutate(month = month(as.Date(date))) %>% 
+    group_by(subdiv_id, month) %>% 
+    summarise(total_sum = sum(checks_report_sum))
+
+
+marketing_raw <- marketing_campain_global(date_finish + years(2000) - months(12),
+                                          date_finish + years(2000))
+
+# marketing_service_data <- marketing_campain_service(date_finish + years(2000)
+#                                                     - months(12),
+#                                                     date_finish + years(2000))
+# 
+# write_rds(marketing_service_data, "data/marketing_service_data.rds")
+marketing_service_data <- read_rds("data/marketing_service_data.rds")
+
+service_marketing_items <- marketing_service_data %>% 
+    distinct(item_id) %>% 
+    pull()
+
+service_marketing_items_with_discounts <- marketing_service_data %>% 
+    filter(item_discount_rate > 0) %>% 
+    distinct(item_id) %>% 
+    pull()
+
+# sale_service_data <- sale_service_data_detailed_fn(date_finish + years(2000)
+#                                                    - months(12),
+#                                                    date_finish + years(2000))
+# 
+# write_rds(sale_service_data, "data/sale_service_data.rds")
+sale_service_data <- read_rds("data/sale_service_data.rds")
+```
+
+
+## Роздрібні маркетингові активності
+
+Загальна сума наданих знижок по кампаніям - `r round(-sum(retail_discount_data$increment)/1000000, 2)`млн.грн, що складає `r round(-sum(retail_discount_data$increment) / sum(sale_retail_data$total_sum) * 100, 2)`% від загальної суми продажу.
+
+```{r}
+discount_by_campaign_month <- retail_discount_data %>% 
+    mutate(name = ifelse(str_detect(name, "Маркетинг"),
+                         "Маркетинг",
+                         name),
+           name = ifelse(str_detect(name, "2022$"),
+                         "ДН Компанії",
+                         name),
+           name = ifelse(str_detect(name, "1С Скидки"),
+                         "Оптові знижки",
+                         name),
+           month = month(date)) %>% 
+    group_by(month, name) %>% 
+    summarise(discount_sum = round(-sum(increment)),
+              base_sum     = round(sum(base_total[increment<0]))) %>% 
+    filter(discount_sum > 0)
+
+discount_by_campaign <- discount_by_campaign_month %>% 
+    group_by(name) %>% 
+    summarise(discount_sum = sum(discount_sum),
+              base_sum     = sum(base_sum))
+
+other_campaign_name <- discount_by_campaign %>% 
+    filter(discount_sum < 90000) %>% 
+    pull(name)
+
+other_campaign <- discount_by_campaign %>% 
+    filter(name %in% other_campaign_name) %>%
+    summarise(discount_sum  = sum(discount_sum),
+              discount_rate = round(sum(discount_sum) / sum(base_sum), 3)) %>% 
+    mutate(name = "Інші")
+    
+discount_by_campaign %>% 
+    filter(discount_sum >= 90000) %>% 
+    mutate(discount_rate = round(discount_sum / base_sum, 3)) %>% 
+    select(-base_sum) %>% 
+    bind_rows(other_campaign) %>% 
+    ggplot(aes(x = discount_sum, y = reorder(name, discount_sum),
+               label = scales::percent(discount_rate))) +
+    geom_col(fill = main_color) +
+    geom_text(aes(x=discount_sum), size = 3) +
+    scale_x_continuous(labels = scales::comma)+
+    theme_minimal() +
+    labs(x = "Сума знижок, грн", y = "",
+         title = "Сума наданих за рік знижок по маркетинговим активностям",
+         subtitle = "та середній відсоток знижок від базової ціни") +
+    theme(panel.grid.major.y = element_blank())
+        
+
+
+```
+
+ДН Компанії теж маркетингова компанія, але відокремлені від інших, так як відрізняється значно більшим відсотком знижок.
+
+Для Подарунка на покупку відсоток знижок не коректний, так як ці товари набирались в окремому чеку.
+
+Використання бонусів є випадковим та не керованим, тому виключимо їх з подальшого аналізу.
+
+```{r}
+discount_raw <- retail_discount_data %>% 
+    filter(!name %in% c("Використання бонусів", "5% на бонусний рахунок"),
+           increment < 0) %>% 
+    mutate(month = month(date),
+           card_customer = ifelse(!is.na(client),
+                                  1,
+                                  0))
+
+unique_base_sum <- discount_raw %>% 
+    group_by(date, client, code_subdivision, item_id, position) %>% 
+    filter(base_total == max(base_total))
+
+base_sum_month <- unique_base_sum %>% 
+    group_by(month) %>% 
+    summarise(total_base_sum = sum(base_total))
+
+discount_by_month <- discount_raw %>% 
+    group_by(month) %>% 
+    summarise(total_discount_sum = round(-sum(increment)),
+              reg_cust_disc_sum = -sum(increment[card_customer == 1]))
+
+coeff <- 60
+
+discount_by_month %>% 
+    left_join(sale_retail_data %>% 
+                  group_by(month) %>% 
+                  summarise(total_sale = sum(total_sum)),
+              by = "month") %>% 
+    left_join(base_sum_month, by = "month") %>% 
+    mutate(sale_discount_prop = round((total_base_sum - total_discount_sum) / 
+                                          total_sale, 3),
+           coef = total_sale / total_discount_sum) %>% 
+    ggplot(aes(x = factor(month), group = 1)) +
+    geom_col(aes(y = total_discount_sum), fill = "#BBEDF0") +
+    geom_text(aes(y = total_sale / coeff,
+                  label = scales::percent(sale_discount_prop)),
+              size = 3, vjust = -1, hjust = 0.2) +
+    geom_point(aes(y = total_sale / coeff), size = 2, color = "steelblue") +
+    geom_line(aes(y = total_sale / coeff), size = 1.2, color = "steelblue") +
+    scale_y_continuous(labels = scales::comma,
+                       # Features of the first axis
+                       name = "Сума наданих знижок (грн)",
+                       
+                       # Add a second axis and specify its features
+                       sec.axis = sec_axis(~.*coeff,
+                            name = "Сума загальних роздрібних продаж (грн)",
+                            labels = scales::comma)) +
+    theme_minimal() +
+    labs(x = "",
+         title = "Сума наданих знижок помісячно",
+         subtitle = "та відсоток продаж із знижками від загальної суми продажу") +
+    theme(panel.grid.major.x = element_blank(),
+          axis.title.y.right = element_text(color = "steelblue", size=11),
+          axis.title.y = element_text(color = "#BBEDF0", size=11))
+
+
+```
+
+
+Чим вище сума наданих знижок та відсоток продаж із знижками тим вище загальні продажі.
+
+
+```{r}
+discount_by_campaign_month %>% 
+    filter(!name %in% "Використання бонусів") %>% 
+    mutate(name = ifelse(name %in% other_campaign_name,
+                         "Інші",
+                         name)) %>% 
+    group_by(month, name) %>% 
+    summarise(discount_sum = sum(discount_sum)) %>%
+    group_by(month) %>%
+    mutate(prop = discount_sum / sum(discount_sum)) %>% 
+    
+    ggplot(aes(x = as.factor(month),
+               fill = as.factor(name),
+               y = prop)) + 
+    geom_bar(stat = "identity",
+             position = "fill") +
+    scale_y_continuous(breaks = seq(0, 1, .2), 
+                       label = scales::percent) +
+    scale_fill_brewer(palette = 2) +
+    coord_flip() +
+    ggthemes::scale_fill_stata() +
+    labs(y = "", 
+         fill = "Активність",
+         x = "Місяць",
+         title = "Склад щомісячних знижок") +
+    theme_minimal() +
+    theme(legend.text = element_text(size = 7),
+          axis.text.x = element_text(size = 6),
+          axis.title.x = element_text(size = 8),
+          axis.text.y = element_text(size = 7))
+```
+
+
+```{r}
+discount_by_month %>% 
+    mutate(prop = reg_cust_disc_sum / total_discount_sum) %>% 
+    ggplot(aes(x = factor(month))) +
+    geom_col(aes(y = prop), fill = main_color) +
+    geom_text(aes(y = prop, label = scales::percent(prop, accuracy = 1)),
+              size = 2.5, vjust = -0.1) +
+    scale_y_continuous(label = scales::percent) +
+    labs(x = "Місяць", y = "", title = "Частка постійних покупців у знижках") +
+    theme_minimal() +
+    theme(panel.grid.major.x = element_blank()
+          ) 
+```
+
+
+```{r}
+discount_raw %>% 
+    mutate(name = ifelse(str_detect(name, "Маркетинг"),
+                         "Маркетинг",
+                         name),
+           name = ifelse(str_detect(name, "2022$"),
+                         "ДН Компанії",
+                         name),
+           name = ifelse(str_detect(name, "1С Скидки"),
+                         "Оптові знижки",
+                         name),
+           name = ifelse(name %in% other_campaign_name,
+                         "Інші",
+                         name)) %>% 
+    group_by(code_subdivision, name) %>% 
+    summarise(total_discount = -sum(increment)) %>% 
+    ungroup() %>% 
+    left_join(select(ref_store, store_id, subdiv_id),
+              by = c("code_subdivision" = "store_id")) %>%
+    left_join(select(ref_subdiv, subdiv_id, subdiv_name),
+              by = "subdiv_id") %>% 
+    filter(!subdiv_id %in% c("000000004", "000000234")) %>% 
+    select(subdiv_name, name, total_discount) %>% 
+    group_by(subdiv_name) %>% 
+    mutate(prop = total_discount / sum(total_discount)) %>% 
+    ungroup() %>% 
+    filter(!name %in% "Округление на вид оплаты") %>% 
+    
+    ggplot(aes(x = as.factor(subdiv_name),
+               fill = as.factor(name),
+               y = prop)) + 
+    geom_bar(stat = "identity",
+             position = "fill") +
+    scale_y_continuous(breaks = seq(0, 1, .2), 
+                       label = scales::percent) +
+    coord_flip() +
+    ggthemes::scale_fill_stata() +
+    labs(y = "", 
+         fill = "Активність",
+         x = "",
+         title = "Склад знижок по підрозділам") +
+    theme_minimal() +
+    theme(legend.text = element_text(size = 7),
+          axis.text.x = element_text(size = 6),
+          axis.title.x = element_text(size = 8),
+          axis.text.y = element_text(size = 7))
+```
+
+
+```{r}
+discount_by_category <- discount_raw %>% 
+    filter(!name %in% "Округление на вид оплаты") %>%
+    mutate(name = ifelse(str_detect(name, "Маркетинг"),
+                         "Маркетинг",
+                         name),
+           name = ifelse(str_detect(name, "2022$"),
+                         "ДН Компанії",
+                         name),
+           name = ifelse(str_detect(name, "1С Скидки"),
+                         "Оптові знижки",
+                         name),
+           name = ifelse(name %in% other_campaign_name,
+                         "Інші",
+                         name)) %>% 
+    left_join(select(ref_items, item_id, group_id),
+              by = "item_id") %>% 
+    left_join(select(ref_item_group, group_id, category_name),
+              by = "group_id") %>% 
+    filter(!is.na(category_name)) %>% 
+    group_by(category_name, name) %>% 
+    summarise(total_discount_sum = -sum(increment),
+              total_base_sum = sum(base_total)) %>% 
+    ungroup()
+
+
+total_category_discount_data <- discount_by_category %>% 
+    group_by(category_name) %>% 
+    summarise(total_discount_sum = sum(total_discount_sum),
+              total_base_sum = sum(total_base_sum)) %>% 
+    mutate(category_discount_rate = round(total_discount_sum / total_base_sum, 2))
+
+discount_by_category %>% 
+    ggplot(aes(y = factor(category_name),
+               fill = factor(name),
+               x = total_discount_sum)) + 
+    geom_bar(stat = "identity",
+             position = "stack") +
+    geom_text(data = total_category_discount_data,
+              aes(y = factor(category_name),
+                  x = total_discount_sum,
+                  label = scales::percent(category_discount_rate)),
+              inherit.aes = FALSE,
+              size = 2.3,
+              hjust = 0) +
+    scale_x_continuous(label = scales::comma) +
+    ggthemes::scale_fill_stata() +
+    labs(y = "", 
+         fill = "Активність",
+         x = "Сума наданих знижок",
+         title = "Склад знижок за категорійними напрямками",
+         subtitle = "та відсоток знижок від базової ціни") +
+    theme_minimal() +
+    theme(legend.text = element_text(size = 7),
+          axis.text.x = element_text(size = 6),
+          axis.title.x = element_text(size = 8),
+          axis.text.y = element_text(size = 7),
+          panel.grid.major.y = element_blank())
+```
+
+Наоменклатурні групи з найбільшими сумами наданих знижок - це групи с сезонними товарами, які намагаємось розпродати після закінчення сезону?
+
+
+Проведемо окремий аналіз маркетингових кампаній.
+
+Почнемо з Дня Народження Компанії:
+
+```{r}
+birthday_marketing <- marketing_raw %>% 
+    filter(str_detect(marketing_camp_name, 'День рождения "Офис-Центр"')) %>% 
+    mutate(store_name = str_extract(marketing_camp_name, "(?<=- ).+(?= -)")) %>% 
+    filter(!store_name %in% "Головний склад") %>% 
+    left_join(select(ref_store, store_name, subdiv_id),
+              by = "store_name") %>%
+    left_join(select(ref_subdiv, subdiv_id, subdiv_name),
+              by = "subdiv_id") %>% 
+    mutate(subdiv_name = case_when(
+        subdiv_name == "Подарунки ХМ СМ"  ~ "Хмельницький см роздріб",
+        TRUE                              ~ subdiv_name
+    )) %>% 
+    group_by(subdiv_name) %>% 
+    summarise(total_items = sum(total_items))
+
+birthday_discount_data <- discount_raw %>% 
+    filter(str_detect(name, "2022$")) %>% 
+    group_by(name) %>% 
+    summarise(total_discount = -sum(increment),
+              total_base_sum = sum(base_total),
+              total_sku = n_distinct(item_id)) %>% 
+    mutate(name = str_replace(name, " 2022", "")) %>% 
+    mutate(name = case_when(
+        name == "ВолВол"         ~ "Володимир Волинський",
+        name == "ДМ"             ~ "Детский Мир",
+        name == "ІФ"             ~ "Івано-Франківськ см роздріб",
+        name == "Кам72"          ~ "Кам'янецька,72",
+        name == "КП2"            ~ "Кам'янець-Подільський см роздріб",
+        name == "КП3"            ~ "Кам'янець-Подільський 3",
+        name == "ЛуКов"          ~ "Луцьк Ковельськ",
+        name == "ЛцСм"           ~ "Луцьк см роздріб",
+        name == "НовНов"         ~ "Нововолинськ НОВ",
+        name == "НовУшииця"      ~ "Нова Ушиця",
+        name == "ПроспЦентр"     ~ "Проспект Центр",
+        name == "Рівне См"       ~ "Рівне Супермаркет Роздріб",
+        name == "СлавутаНов"     ~ "СлавутаНова",
+        name == "СлавутаСтар"    ~ "Славута",
+        name == "СтарконПл"      ~ "Старокостянтинів Планета",
+        name == "СтарконТЦ"      ~ "Старкон ТоргівельнийЦентр",
+        name == "ТрСм"           ~ "Тернопіль см роздріб",
+        name == "ХмСм"           ~ "Хмельницький см роздріб",
+        name == "ШепетівкаА"     ~ "Шепетівка А",
+        name == "ШепетівкаБ"     ~ "Шепетівка В Розн",
+        TRUE                     ~ name
+    )) %>% 
+    left_join(birthday_marketing, by = c("name" = "subdiv_name")) %>% 
+    mutate(item_prop = round(total_sku / total_items, 2),
+           discount_rate = round(total_discount / total_base_sum, 2))
+
+birthday_discont_sum <- sum(birthday_discount_data$total_discount)
+birthday_total_sum <- sum(birthday_discount_data$total_base_sum) -
+   sum(birthday_discount_data$total_discount) 
+total_sale_on_birthday <- sale_retail_raw  %>% 
+    filter(as.Date(date) >= as.Date("4022-08-11"),
+           as.Date(date) <= as.Date("4022-08-13")) %>% 
+    summarise(sum(checks_report_sum)) %>% 
+    pull()
+
+birthday_discount_data %>% 
+    ggplot(aes(y = reorder(name, total_base_sum))) +
+    geom_col(aes(x = total_base_sum), fill = main_color) +
+    geom_text(aes(x = total_base_sum,
+                  label = scales::percent(item_prop, accuracy = 1)),
+              size = 2.3, hjust = -0.1) +
+    scale_x_continuous(label = scales::comma) +
+    labs(x = "Сума продажу акційних товарів, грн", y = "",
+         title = "Аналіз кампанії ДН Офіс-Центр",
+         subtitle = "та відсоток проданих SKU, що приймали участь у кампанії") +
+    theme_minimal() +
+    theme(panel.grid.major.y = element_blank()
+          )
+```
+
+Отже загальні продажі з цієї маркетингової кампанії склали `r round(birthday_total_sum/1000, 2)`тис.грн. Порівняємо з загальними роздрібними продажами у дні її проведення, які склали `r round(total_sale_on_birthday/1000, 2)`тис.грн. Ми бачимо, що в середньому, тіж самі 10% складають відсотки проданих SKU, що приймали участь у кампанії. Чи варто це зусиллям на проведення цієї маркетингової кампанії?
+
+
+```{r}
+marketing_campaign_data <- discount_raw %>% 
+    filter(str_detect(name, "Маркетинг"))
+
+marketing_campaign_condition <- marketing_raw %>% 
+    filter(!str_detect(marketing_camp_name, 'День рождения "Офис-Центр"')) %>% 
+    mutate(campaign_nmbr = str_sub(nmbr_marketing_doc, -3)) %>% 
+    mutate(campaign_nmbr = as.integer(campaign_nmbr),
+           date_marketing_start = date_marketing_start - years(2000),
+           date_marketing_finish = date_marketing_finish - years(2000)) %>% 
+    select(-nmbr_marketing_doc)
+    
+
+marketing_campaign_total <- marketing_campaign_data %>% 
+    group_by(name) %>% 
+    summarise(total_discount = -sum(increment),
+              total_base = sum(base_total),
+              total_qty = sum(total_quantity),
+              total_sku = n_distinct(item_id)) %>% 
+    mutate(discount_rate = round(total_discount / total_base, 3)) %>% 
+    arrange(desc(total_discount)) %>% 
+    mutate(campaign_nmbr = str_extract(name, "(?<=Маркетинг )\\d+"),
+           campaign_nmbr = as.integer(campaign_nmbr)) %>% 
+    left_join(marketing_campaign_condition, by = "campaign_nmbr") %>% 
+    mutate(campaign_duration = as.numeric(date_marketing_finish -
+                                              date_marketing_start),
+           marketing_camp_name = str_c(marketing_camp_name, ": ",
+                                       campaign_duration, "дн., ",
+                                       total_items, "SKU")) %>% 
+   mutate(total_sale_sum = total_base - total_discount) 
+
+marketing_campaign_total_discount <- sum(marketing_campaign_total$total_discount) +
+    birthday_discont_sum
+
+marketing_campaign_total_sum <- sum(marketing_campaign_total$total_sale_sum) +
+    birthday_total_sum
+```
+
+
+Всього за рік було проведено `r nrow(marketing_campaign_total) + 1` маркетингових кампаній для роздрібу. Загальна сума продажу товарів з маркетингових кампаній - `r round(marketing_campaign_total_sum/1000000, 2)`млн.грн, загальна сума наданих при цьому знижок - `r round(marketing_campaign_total_discount/1000000, 2)`млн.грн (з урахуванням Дня Народження Компанії).
+
+Найкращі кампанії з суми продажу:
+
+```{r}
+marketing_campaign_total %>% 
+    slice_max(order_by = total_sale_sum, n = 10) %>% 
+    
+    ggplot(aes(y = reorder(marketing_camp_name, total_sale_sum))) +
+    geom_col(aes(x = total_sale_sum), fill = main_color) +
+    geom_text(aes(x = total_sale_sum,
+                  label = scales::percent(discount_rate, accuracy = 1)),
+              size = 2.3, hjust = -0.1) +
+    scale_x_continuous(label = scales::comma,
+                       limits = c(0, 2600000),
+                       breaks = c(500000, 2500000)) +
+    labs(x = "Сума продажу акційних товарів, грн", y = "",
+         title = "ТОП-10 кампаній з найбільшою сумою продажу",
+         subtitle = "та відсоток наданих знижок") +
+    theme_minimal() +
+    theme(panel.grid.major.y = element_blank(),
+          plot.title.position = "plot"
+          )
+```
+
+
+Найгірші кампанії з суми продажу:
+
+```{r}
+marketing_campaign_total %>% 
+    slice_min(order_by = total_base, n = 10) %>% 
+    
+    ggplot(aes(y = reorder(marketing_camp_name, total_base))) +
+    geom_col(aes(x = total_base), fill = worst_color) +
+    geom_text(aes(x = total_base,
+                  label = scales::percent(discount_rate, accuracy = 1)),
+              size = 2.3, hjust = -0.1) +
+    scale_x_continuous(label = scales::comma,
+                       limits = c(0, 1550)) +
+    labs(x = "Сума продажу акційних товарів, грн", y = "",
+         title = "ТОП-10 кампаній з найменшою сумою продажу",
+         subtitle = "та відсоток наданих знижок") +
+    theme_minimal() +
+    theme(panel.grid.major.y = element_blank(),
+          plot.title.position = "plot")
+```
+
+
+```{r}
+marketing_campaign_total %>% 
+    select(marketing_camp_name, total_sale_sum, total_discount, discount_rate,
+           total_sku, total_qty) %>% 
+    DT::datatable(#rownames = FALSE,
+                  colnames = c('Найменування кампаніії', 'Сума продажу',
+                               'Сума знижок', '% знижки', 'Кіл.прод.SKU',
+                               'Кіл.прод.од.'),
+                  filter = 'top',
+                  extensions = c('Buttons'),
+                  options = list(
+                      dom = 'Brtp',
+                      buttons = 'excel'
+                  )) %>% 
+    DT::formatRound(c(2,3,6), digits = 0, mark = "'") %>% 
+    DT::formatPercentage(c(4), digits = 2)
+```
+
+
+
+## Маркетингові кампанії для В2В
+
+
+У 2022р. було `r n_distinct(marketing_service_data$nmbr_marketing_doc)` маркетингових кампаній УТП, у яких були присутніми `r length(service_marketing_items)` унікальних SKU, з яких тількі у `r length(service_marketing_items_with_discounts)` SKU були встановлені знижки.
+
+```{r}
+service_campaign <- marketing_service_data %>% 
+    group_by(nmbr_marketing_doc, marketing_camp_name) %>% 
+    summarise(date_marketing_start = first(date_marketing_start),
+              date_marketing_finish = first(date_marketing_finish),
+              total_items_qty = n_distinct(item_id),
+              items_qty_with_discount = n_distinct(item_id[item_discount_rate > 0])) %>% 
+    ungroup() %>% 
+    mutate(date_marketing_start  = date_marketing_start - years(2000),
+           date_marketing_finish = date_marketing_finish - years(2000),
+           duration = ifelse(date_marketing_finish < date_finish,
+                             as.integer(date_marketing_finish -
+                                           date_marketing_start + 1),
+                             as.integer(as.Date(date_finish) -
+                                           as.Date(date_marketing_start))),
+           camp_interval = interval(date_marketing_start, date_marketing_finish))
+
+service_campaign_items <- marketing_service_data %>% 
+    #filter(item_discount_rate > 0) %>%
+    distinct() %>% 
+    mutate(date_marketing = map2(date_marketing_start, date_marketing_finish,
+                                 seq, by = "1 day")) %>% 
+    select(nmbr_marketing_doc, item_id, item_retail_price, item_camp_price,
+           date_marketing, item_camp_discount_rate = item_discount_rate) %>% 
+    unnest(cols = c(date_marketing)) %>%
+    mutate(date_marketing = date_marketing - years(2000)) %>% 
+    arrange(item_id, desc(item_camp_discount_rate), desc(nmbr_marketing_doc)) %>% 
+    group_by(item_id, date_marketing) %>% 
+    filter(row_number()==1)
+
+sale_service_camp_data <- sale_service_data %>%
+    select(sale_doc_nmbr, sale_doc_date, customer_id, item_id, item_qty,
+           item_sum, item_discount_rate) %>% 
+    left_join(service_campaign_items,
+              by = c("item_id",
+                     "sale_doc_date" = "date_marketing")) %>% 
+    filter(!is.na(nmbr_marketing_doc))
+
+service_campaign_customers <- sale_service_camp_data %>% 
+    group_by(customer_id) %>% 
+    summarise(campaign_qty = n_distinct(nmbr_marketing_doc))
+```
+
+
+Під час кампаній `r nrow(service_campaign_customers)` покупців здійснили покупку товарів, що приймали участь у цих маркетингових кампаніях, на загальну суму `r round(sum(sale_service_camp_data$item_sum) / 1000000, 2)`млн.грн. 
+
+
+```{r}
+mean_camp = round(mean(service_campaign_customers$campaign_qty), 1)
+max_camp = max(service_campaign_customers$campaign_qty)
+
+top_active_cust <- service_campaign_customers %>% 
+    filter(campaign_qty >= 20) %>% 
+    select(customer_id) %>% 
+    left_join(select(ref_customers, customer_id, customer_name),
+              by = "customer_id")
+
+service_campaign_customers %>% 
+    ggplot(aes(x=campaign_qty)) +
+    geom_histogram(binwidth= 1, fill="#69b3a2", color="#e9ecef", alpha=0.9) +
+    scale_x_continuous(limits = c(0, 25), breaks =c (5,10,15,20,25)) +
+    #scale_y_log10() +
+    labs(x = "Кіл-ть кампаній", y = "Кіл-ть покупців",
+         title = "Кількість кампаній у покупців у 2022р.",
+         subtitle = paste0("Середнє значення - ", mean_camp,
+                           ", максимальне - ", max_camp)) +
+    theme_minimal()
+```
+
+Лише 3 покупця брали участь у мінімум 20 кампаніях - `r top_active_cust$customer_name[1]`, `r top_active_cust$customer_name[2]`, `r top_active_cust$customer_name[3]`. Мабуть, це свідчить про невелику ефективність кампаній.
+
+
+Кампанії з найбільшою кількістю покупців:
+
+```{r}
+service_campaign_cust_qty <- sale_service_camp_data %>% 
+    group_by(nmbr_marketing_doc) %>% 
+    summarise(customers_qty = n_distinct(customer_id))
+
+camp_total_customers <- service_campaign %>% 
+    select(nmbr_marketing_doc, date_marketing_start, date_marketing_finish) %>% 
+    mutate(total_cust_qty = map2_int(date_marketing_start, date_marketing_finish, 
+                          count_customers)) %>% 
+    select(-date_marketing_start, -date_marketing_finish)
+
+top_campaign <- service_campaign_cust_qty %>% 
+    slice_max(order_by = customers_qty, n = 10) %>% 
+    left_join(service_campaign, by = "nmbr_marketing_doc") %>% 
+    left_join(camp_total_customers, by = "nmbr_marketing_doc") %>% 
+    mutate(marketing_camp_name = str_c(marketing_camp_name, " - ",
+                                       total_items_qty, "(",
+                                       items_qty_with_discount, "), ",
+                                       duration, "дн"),
+           camp_cust_prop = round(customers_qty / total_cust_qty, 2))
+
+top_campaign %>% 
+    ggplot(aes(y = reorder(marketing_camp_name, customers_qty))) +
+    geom_col(aes(x = customers_qty), fill = main_color) +
+    geom_text(aes(x = customers_qty,
+                  label = scales::percent(camp_cust_prop, accuracy = 1)),
+              size = 2.3, hjust = -0.1) +
+    labs(x = "Кількість покупців", y = "",
+         title = "ТОП-10 кампаній з найбільшою кількістю покупців",
+         subtitle = "та відсоток від загальної кількості покупців у цей період") +
+    theme_minimal() +
+    theme(panel.grid.major.y = element_blank(),
+          plot.title.position = "plot"
+          )
+```
+
+
+```{r}
+top_worst_campaign <- service_campaign_cust_qty %>% 
+    slice_min(order_by = customers_qty, n = 10) %>% 
+    left_join(service_campaign, by = "nmbr_marketing_doc") %>%
+    left_join(camp_total_customers, by = "nmbr_marketing_doc") %>% 
+    mutate(marketing_camp_name = str_c(marketing_camp_name, " - ",
+                                       total_items_qty, "(",
+                                       items_qty_with_discount, "), ",
+                                       duration, "дн"),
+           camp_cust_prop = round(customers_qty / total_cust_qty, 2))
+
+without_sale <- anti_join(service_campaign, service_campaign_cust_qty,
+                          by = "nmbr_marketing_doc") %>% 
+    mutate(marketing_camp_name = str_c(marketing_camp_name, " - ",
+                                       total_items_qty, "(",
+                                       items_qty_with_discount, "), ",
+                                       duration, "дн"))
+
+top_worst_campaign %>% 
+    ggplot(aes(y = reorder(marketing_camp_name, customers_qty))) +
+    geom_col(aes(x = customers_qty), fill = worst_color) +
+    geom_text(aes(x = customers_qty,
+                  label = scales::percent(camp_cust_prop, accuracy = 1)),
+              size = 2.3, hjust = -0.1) +
+    labs(x = "Кількість покупців", y = "",
+         title = "ТОП-10 кампаній з найменшою кількістю покупців",
+         subtitle = "та відсоток від загальної кількості покупців у цей період") +
+    theme_minimal() +
+    theme(panel.grid.major.y = element_blank(),
+          plot.title.position = "plot"
+          )
+```
+
+
+По двом кампанім взагалі не було продажу товарів у період проведення - `r without_sale$marketing_camp_name[1]` та `r without_sale$marketing_camp_name[2]`.
+
+
+```{r}
+service_campaign_items <- marketing_service_data %>% 
+    filter(item_discount_rate > 0) %>%
+    mutate(date_marketing = map2(date_marketing_start, date_marketing_finish,
+                                 seq, by = "1 day")) %>% 
+    select(nmbr_marketing_doc, item_id, item_retail_price, item_camp_price,
+           date_marketing, item_camp_discount_rate = item_discount_rate) %>% 
+    unnest(cols = c(date_marketing)) %>%
+    mutate(date_marketing = date_marketing - years(2000))
+
+sale_service_discount_items <- sale_service_data %>% 
+    select(-c(sale_doc_nmbr, subdiv_id:store_id)) %>% 
+    filter(item_id %in% service_marketing_items_with_discounts) %>% 
+    left_join(service_campaign_items,
+              by = c("item_id", "sale_doc_date" = "date_marketing")) %>% 
+    filter(!is.na(item_camp_discount_rate),
+           #item_discount_rate != 0,
+           #!(round(item_sum, 2) < round(item_camp_price * item_qty, 2)),
+           (round(item_discount_rate * 100, 1) == round(item_camp_discount_rate, 1))) %>% 
+    left_join(select(ref_items, item_id, group_id), by = "item_id")
+
+group_discount_data <- item_groups_discounts(
+    unique(sale_service_discount_items$group_id),
+    unique(sale_service_discount_items$customer_id),
+    date_finish + years(2000) - years(1),
+    date_finish + years(2000)) %>% 
+    distinct() %>% 
+    mutate(date_start_discount = date_start_discount - years(2000),
+           date_finish_discount = date_finish_discount - years(2000)) %>% 
+    arrange(customer_id, group_id, date_start_discount)
+
+sale_service_discount_items_full <- sale_service_discount_items %>% 
+    mutate(cust_group_discount = pmap_int(list(customer_id, group_id,
+                                               sale_doc_date),
+                                          current_customer_group_discount)) %>% 
+    mutate(camp_disc_sum = ifelse(cust_group_discount > 0,
+                                  item_sum / (1 - item_discount_rate) *
+                                      (1 - cust_group_discount/100) - item_sum,
+                                  item_sum / (1 - item_discount_rate) - item_sum))
+```
+
+
+Загальна сума наданих у кампаніях знижок - `r round(sum(sale_service_discount_items_full$camp_disc_sum) / 1000, 1)`тис.грн.
+
+Товари, на знижки з яких, відгукнулось найбільше покупців:
+
+
+```{r}
+campaign_service_discount_sum <- sale_service_discount_items_full %>% 
+    group_by(item_id) %>% 
+    summarise(total_sale_sum = round(sum(item_sum)),
+              camp_disc_sum = round(sum(camp_disc_sum)/1000, 1),
+              total_customers = n_distinct(customer_id)) %>% 
+    arrange(desc(total_customers))
+
+campaign_service_discount_sum %>% 
+    head(10) %>% 
+    left_join(select(ref_items, item_id, item_name), by = "item_id") %>% 
+    
+    ggplot(aes(y = reorder(item_name, total_customers))) +
+    geom_col(aes(x = total_customers), fill = main_color) +
+    geom_text(aes(x = total_customers, label = camp_disc_sum),
+              size = 2.3, hjust = -0.1) +
+    labs(x = "Кількість покупців", y = "",
+         title = "ТОП-10 SKU з найбільшою кількістю покупців",
+         subtitle = "та сума наданих знижок (тис.грн)") +
+    theme_minimal() +
+    theme(panel.grid.major.y = element_blank(),
+          plot.title.position = "plot"
+          )
+```

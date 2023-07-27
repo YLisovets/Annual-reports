@@ -1,0 +1,1375 @@
+---
+title: "Звіт з B2B за 2022р."
+output:
+   html_document:
+     theme: flatly
+     toc: true
+     toc_float: TRUE
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE, out.width = '100%')
+
+library(tidyverse)
+library(lubridate)
+library(timetk)
+library(ggalt)
+library(ggtext)
+
+Sys.setlocale(locale = "uk-UA.UTF-8")
+
+source("script/collect_data.R")
+source("script/functions.R")
+
+date_finish <- as.Date("2023-01-01")
+```
+
+## Загальний аналіз
+
+```{r}
+sale_data_common <- sale_service_data_common_fn(date_finish + years(2000) - years(5),
+                                        date_finish + years(2000)) %>% 
+    filter(!is.na(customer_id),
+           !project_id %in% c("000000002", "000000003", "000000004")) %>% 
+    left_join(select(ref_customers, customer_id, customer_type, edrp_code)) %>% 
+    # Видалємо кінцевих покупців
+    filter(!(is.na(customer_type) & edrp_code == "")) %>% 
+    mutate(subdiv_id = case_when(
+               subdiv_id == "000000246"  ~ "000000191",  # Луцьк Ков. -> Луцьк серв.
+               subdiv_id == "000000236"  ~ "000000168",  # PROM -> Интернет-магазин                         
+               TRUE                      ~ subdiv_id))
+
+worKing_time_data <- tibble(start = seq.Date(date_finish - years(5),
+                                             date_finish - months(1),
+                                             by = "month"),
+                            finish = seq.Date(date_finish - years(5) + months(1),
+                                              date_finish,
+                                              by = "month")) %>% 
+    mutate(year = year(start),
+           month_data = map2(start + years(2000), finish + years(2000),
+                             working_time_fn))
+
+trade_subdivs <- ref_subdiv %>% 
+    filter(parent %in% c("000000133", "000000134", "000000135") |
+               subdiv_id %in% c("000000215", "000000249")) %>% 
+    pull(subdiv_id)
+
+position_data <- worKing_time_data %>% 
+    mutate(month = month(start)) %>% 
+    select(-finish, -start
+    ) %>% 
+    unnest(month_data) %>% 
+    filter(subdiv_id %in% trade_subdivs,
+           position_id %in% c("000000195",       # Начальник відділу
+                              "000000176",       # Начальник відділу корп.продажу
+                              "000000200",       # Менеджер з продажів
+                              "000000227",       # Молодший менеджер з продажів
+                              "000000262",       # Менеджер з продажу меблів
+                              "000000026",       # Оператор комп.набору
+                              "000000031")) %>%  # Керуючий магазином
+    mutate(subdiv_id = case_when(
+               subdiv_id == "000000246"  ~ "000000191",  # Луцьк Ков. -> Луцьк серв.
+               subdiv_id == "000000236"  ~ "000000168",  # PROM -> Интернет-магазин                         
+               TRUE                      ~ subdiv_id)) %>% 
+    mutate(position_qty = ifelse(position_id == "000000031",
+                                 1L,
+                                 position_qty)) %>% 
+    
+    group_by(subdiv_id, year, month) %>% 
+    summarise(total_service_staff = sum(position_qty)) %>% 
+    ungroup() %>% 
+    # mutate(total_service_staff = ifelse(subdiv_id == "000000140", # Чернівці
+    #                                     total_service_staff - 1,
+    #                                     total_service_staff)) %>% 
+    group_by(subdiv_id, year) %>% 
+    summarise(avr_service_staff = round(mean(total_service_staff), 1))
+
+profit_subdiv_year <- sale_data_common %>% 
+    mutate(year = year(sale_doc_date)) %>% 
+    group_by(year, subdiv_id) %>% 
+    summarise(subdiv_profit = sum(doc_sale_sum) - sum(doc_cost_sum),
+              subdiv_cust_qty = n_distinct(customer_id)) %>% 
+    ungroup() %>% 
+    filter(subdiv_cust_qty > 20) %>% 
+    left_join(position_data, by = c("year", "subdiv_id"))
+
+sale_years_data <- sale_data_common %>% 
+    group_by(customer_id, subdiv_id, sale_doc_date) %>% 
+    summarise(doc_sale_sum = sum(doc_sale_sum),
+              doc_profit   = sum(gross_profit)) %>% 
+    ungroup() %>% 
+    mutate(year = year(sale_doc_date)) %>% 
+    group_by(year, customer_id) %>% 
+    summarise(total_sale = sum(doc_sale_sum),
+              total_docs = n(),
+              total_profit = sum(doc_profit)) %>% 
+    ungroup() %>%
+    mutate(avr_doc_sum = round(total_sale / total_docs)) %>% 
+    left_join(select(ref_customers, customer_id, customer_type))
+
+year_customers_qty <- sale_years_data %>% 
+    group_by(year) %>% 
+    summarise(total_customers = n_distinct(customer_id))
+
+gmrol_year <- profit_subdiv_year %>% 
+    group_by(year) %>% 
+    summarise(year_profit = sum(subdiv_profit),
+              year_avr_service_staff = sum(avr_service_staff, na.rm = TRUE)) %>% 
+    left_join(year_customers_qty, by = "year") %>% 
+    mutate(gmrol = round(year_profit / year_avr_service_staff / 1000, 1),
+           service_factor = round(total_customers / year_avr_service_staff),
+           fill_var = ifelse(year == 2022,
+                             1,
+                             0))
+
+gmrol_year %>% 
+    ggplot(aes(x = year, y = gmrol, fill = factor(fill_var), label = gmrol)) +
+    geom_col() +
+
+    geom_text(aes(y = gmrol),
+              vjust = 1, size = 3) +
+
+    labs(x = "", y = "", fill = "",
+         title = "GMROL (людини) по роках, тис.грн") +
+    scale_fill_manual(values = c("lightgrey", "#C0D996")) +
+    ggthemes::theme_economist_white() +
+    theme(legend.position = "none",
+          axis.text.x = element_text(size = 10),
+          axis.text.y = element_text(size = 8),
+          panel.grid.minor.x = element_blank(),
+          panel.grid.major.x = element_blank()
+          )
+```
+
+```{r}
+gmrol_subdiv <- profit_subdiv_year %>% 
+    filter(year == 2022) %>% 
+    mutate(gmrol = round(subdiv_profit / avr_service_staff / 1000),
+           service_factor = round(subdiv_cust_qty / avr_service_staff)) %>% 
+    left_join(ref_subdiv, by = "subdiv_id")
+
+gmrol_subdiv %>% 
+    ggplot(aes(x = reorder(subdiv_name, gmrol), y = gmrol, label = gmrol)) +
+    geom_col(aes(fill= gmrol)) +
+    coord_flip() +
+    scale_y_continuous(expand = c(0, 0)) +
+
+    geom_text(aes(y = gmrol),
+              hjust = "inward", size = 2.75) +
+    
+    scale_fill_gradient(low="#C0D996", high="#D2F788", guide = "none") +
+    labs(x = "", y = "", fill = "",
+         title = "GMROL (людини) підрозділів у 2022р., тис.грн") +
+
+    theme_bw() +
+    theme(panel.grid = element_blank(),
+          axis.text.x = element_blank(),
+          panel.border = element_blank())
+```
+
+
+```{r}
+gmrol_year %>% 
+    ggplot(aes(x = year, y = service_factor, fill = factor(fill_var),
+               label = service_factor)) +
+    geom_col() +
+
+    geom_text(aes(y = service_factor),
+              vjust = 1, size = 3) +
+
+    labs(x = "", y = "", fill = "",
+         title = "Сервіс-фактор по роках") +
+    scale_fill_manual(values = c("lightgrey", "#C0D996")) +
+    ggthemes::theme_economist_white() +
+    theme(legend.position = "none",
+          axis.text.x = element_text(size = 10),
+          axis.text.y = element_text(size = 8),
+          panel.grid.minor.x = element_blank(),
+          panel.grid.major.x = element_blank()
+          )
+```
+
+```{r}
+gmrol_subdiv %>% 
+    ggplot(aes(x = reorder(subdiv_name, service_factor), y = service_factor,
+               label = service_factor)) +
+    geom_col(aes(fill= service_factor)) +
+    coord_flip() +
+    scale_y_continuous(expand = c(0, 0)) +
+
+    geom_text(aes(y = service_factor),
+              hjust = "inward", size = 2.75) +
+    
+    scale_fill_gradient(low="#C0D996", high="#D2F788", guide = "none") +
+    labs(x = "", y = "", fill = "",
+         title = "Сервіс-фактор підрозділів у 2022р.") +
+
+    theme_bw() +
+    theme(panel.grid = element_blank(),
+          axis.text.x = element_blank(),
+          panel.border = element_blank())
+```
+
+
+Щомісячні продажі за останні 5 років:
+
+```{r cars}
+sales_monthly <- sale_data_common %>% 
+    summarise_by_time(sale_doc_date, .by = "month",
+                      sales = round(sum(doc_sale_sum) / 1000000, 1)) %>% 
+    mutate(year  = year(sale_doc_date),
+           month = month(sale_doc_date, label = TRUE))
+
+sales_monthly %>% 
+  plot_time_series(sale_doc_date, sales,
+                   .smooth_period = "auto",
+                   .title = "Щомісячні продажі у 2018-2022рр.")
+    
+```
+
+Ми бачимо, що продажі "просіли" у 2020р. (локдаун при коронавірусі) та мають значний ріст у 21-22рр.
+
+
+
+Проаналізуємо за рахунок чого відбулося зростання у 2022р.- збільшення кількості покупців, чи зростання середньої суми продажу.
+
+Зміни у кількісті покупців:
+
+```{r}
+sale_years_data %>% 
+    filter(!is.na(customer_type)) %>% 
+    ggplot(aes(x = factor(year), fill = customer_type)) +
+    geom_bar(stat = "count", position = "stack") +
+    geom_text(aes(label=..count..), stat="count",
+              position=position_stack(0.5), size=5) +
+    scale_fill_manual(values = c("#EE865D", "#59BEC4", "#6A953F")) +
+    ggthemes::theme_economist_white() +
+    labs(x = "", y = "Кількість покупців", fill = "Тип покупця",
+         title = "Кількість покупців за типами по рокам")
+```
+
+```{r}
+sale_subdiv_data <- sale_data_common %>% 
+    filter(sale_doc_date >= date_finish - years(2)) %>% 
+    mutate(year = year(sale_doc_date )) %>% 
+    group_by(year, subdiv_id, customer_id) %>% 
+    summarise(customer_sale = sum(doc_sale_sum),
+              customer_docs = n_distinct(sale_doc_nmbr)) %>% 
+    ungroup() %>% 
+    filter(customer_sale > 10)
+
+total_sale_subdiv <- sale_subdiv_data %>% 
+    group_by(year, subdiv_id) %>% 
+    summarise(customers_qty = n_distinct(customer_id)) %>% 
+    arrange(subdiv_id, desc(year)) %>% 
+    group_by(subdiv_id) %>% 
+    mutate(total_growth = round(customers_qty / lead(customers_qty),
+                                 2)) %>% 
+    filter(year == 2022,
+           customers_qty > 10) %>% 
+    left_join(ref_subdiv) %>% 
+    mutate(type_cust = "Загальний") %>% 
+    select(-year)
+
+sale_subdiv_budjet <- sale_subdiv_data %>% 
+    filter(year == 2022,
+           subdiv_id %in% total_sale_subdiv$subdiv_id) %>% 
+    left_join(select(ref_customers, customer_id, customer_type)) %>% 
+    group_by(subdiv_id) %>% 
+    summarise(customers_qty = n_distinct(customer_id[customer_type == "Бюджет"])) %>% 
+    left_join(ref_subdiv) %>% 
+    mutate(type_cust = "Бюджет")
+
+total_sale_subdiv$subdiv_name <- factor(total_sale_subdiv$subdiv_name,
+                                 levels = total_sale_subdiv$subdiv_name)
+
+total_sale_subdiv %>% 
+    ggplot(aes(x = reorder(subdiv_name, customers_qty))) +
+    geom_col(aes(y = customers_qty, fill = "Загальна")) +
+    geom_col(data = sale_subdiv_budjet,
+             aes(y = customers_qty, fill = "Бюджет")) +
+    # geom_text(aes(y = 0,
+    #               label = scales::percent(reg_cust_share)),
+    #           hjust = 0,
+    #           size = 2.5) +
+    geom_text(aes(y = customers_qty, label = total_growth),
+              hjust = "inward", size = 2.5) +
+    scale_y_continuous(labels = scales::comma,
+                       expand = c(0, 0)) +
+    coord_flip() +
+    labs(x = "", y = "", fill = "",
+         title = "Кількість покупців підрозділів у 2022р. (з ТР)") +
+    theme_bw() +
+    theme(legend.position = "none",
+          axis.text.x = element_text(size = 10),
+          axis.text.y = element_text(size = 8),
+          legend.text = element_text(size = 8),
+          legend.spacing.x = unit(0.3, 'cm'),
+          #legend.text.align = 0.8,
+          panel.grid.minor.y = element_blank(),
+          panel.grid.major.y = element_blank()
+          ) +
+    scale_fill_manual(values = c("Загальна" = "#59BEC4",
+                                 "Бюджет" = "#EE865D")) 
+```
+
+
+Зміни у загальній сумі продажу покупцю:
+
+```{r}
+data_median <- sale_years_data %>%
+    filter(!is.na(customer_type)) %>% 
+    group_by(year, customer_type) %>% 
+    summarise(med = round(median(total_sale)))
+
+sale_years_data %>%
+    filter(!is.na(customer_type)) %>% 
+    ggplot(aes(x = factor(year), y = total_sale, fill = customer_type)) +
+    geom_boxplot() +
+    geom_text(data = data_median, aes(factor(year), med, label = med),
+              position = position_dodge(width = 0.8), size = 3, vjust = -0.5) +
+    scale_y_log10(labels = scales::comma) +
+    scale_fill_manual(values = c("#EE865D", "#59BEC4")) +
+    ggthemes::theme_economist_white() +
+    labs(x = "", y = "Сума, грн", fill = "Тип покупця",
+         title = "Загальні суми покупців за рік за типами")
+```
+
+
+У 21-22рр. відбулося досить значне зростання загальної суми як бюджетних покупців, так і корпоративних.
+
+
+```{r}
+avr_sale_subdiv_customer_data <- sale_subdiv_data %>%
+    filter(year == 2022,
+           subdiv_id %in% total_sale_subdiv$subdiv_id) %>% 
+    left_join(ref_subdiv)
+
+avr_customer_median <- avr_sale_subdiv_customer_data %>% 
+    group_by(subdiv_name) %>% 
+    summarise(med = round(median(customer_sale))) %>% 
+    arrange(desc(med))
+
+avr_sale_subdiv_customer_data$subdiv_name <- factor(
+    avr_sale_subdiv_customer_data$subdiv_name,
+    levels = avr_customer_median$subdiv_name)
+
+avr_sale_subdiv_customer_data %>% 
+
+    ggplot(aes(x = subdiv_name, y = customer_sale)) +
+    geom_boxplot(fill = "#59BEC4") +
+    geom_text(data = avr_customer_median, aes(factor(subdiv_name),
+                                              med, label = scales::comma(med)),
+              position = position_dodge(width = 0.5), size = 2.5, hjust =- 0.1) +
+    scale_y_log10(labels = scales::comma) +
+    coord_flip() +
+    theme_bw() +
+    labs(x = "", y = "Сума, грн",
+         title = "Загальні суми покупців за рік за підрозділами")
+```
+
+
+
+Перевіримо, що є причиною загальної суми - зростання кількості документів на покупця чи середньої суми документа: 
+
+```{r}
+data_median_docs <- sale_years_data %>%
+    filter(!is.na(customer_type)) %>% 
+    group_by(year, customer_type) %>% 
+    summarise(med = round(median(total_docs)))
+
+sale_years_data %>%
+    filter(!is.na(customer_type)) %>% 
+    ggplot(aes(x = factor(year), y = total_docs, fill = customer_type)) +
+    geom_boxplot() +
+    geom_text(data = data_median_docs, aes(factor(year), med, label = med),
+              position = position_dodge(width = 0.8), size = 3, vjust = -0.5) +
+    # stat_summary(fun = mean, geom = "point", shape = 21,
+    #              size = 2, color = "red",
+    #              position = position_dodge(width = .75)) +
+    scale_y_log10() +
+    scale_fill_manual(values = c("#EE865D", "#59BEC4")) +
+    ggthemes::theme_economist_white() +
+    labs(x = "", y = "Кіл-ть", fill = "Тип покупця",
+         title = "Кількість документів продажу за рік за типами")
+
+data_median_avr_doc_sum <- sale_years_data %>%
+    filter(!is.na(customer_type)) %>% 
+    group_by(year, customer_type) %>% 
+    summarise(med = round(median(avr_doc_sum)))
+
+sale_years_data %>%
+    filter(!is.na(customer_type)) %>% 
+    ggplot(aes(x = factor(year), y = avr_doc_sum, fill = customer_type)) +
+    geom_boxplot() +
+    geom_text(data = data_median_avr_doc_sum, aes(factor(year), med, label = med),
+              position = position_dodge(width = 0.8), size = 3, vjust = -0.5) +
+    scale_y_log10(labels = scales::comma) +
+    scale_fill_manual(values = c("#EE865D", "#59BEC4")) +
+    ggthemes::theme_economist_white() +
+    labs(x = "", y = "Сума, грн", fill = "Тип покупця",
+         title = "Середня сума документів продажу за типами покупців")
+```
+
+
+Ми бачимо значне зростання середньої суми документа продажу у останній рік при незначному зменьшенню кількості документів.
+
+
+```{r}
+avr_sale_doc_customer_data <- avr_sale_subdiv_customer_data %>%
+    mutate(avr_sale_doc = round(customer_sale / customer_docs))
+
+avr_customer_doc_median <- avr_sale_doc_customer_data %>% 
+    group_by(subdiv_name) %>% 
+    summarise(med = round(median(avr_sale_doc))) %>% 
+    arrange(desc(med))
+
+avr_sale_doc_customer_data$subdiv_name <- factor(
+    avr_sale_subdiv_customer_data$subdiv_name,
+    levels = avr_customer_doc_median$subdiv_name)
+
+avr_sale_doc_customer_data %>% 
+
+    ggplot(aes(x = subdiv_name, y = avr_sale_doc)) +
+    geom_boxplot(fill = "#59BEC4") +
+    geom_text(data = avr_customer_doc_median, aes(factor(subdiv_name),
+                                              med, label = scales::comma(med)),
+              position = position_dodge(width = 0.5), size = 2.5, hjust =- 0.1) +
+    scale_y_log10(labels = scales::comma) +
+    coord_flip() +
+    theme_bw() +
+    labs(x = "", y = "Сума, грн",
+         title = "Середня сума документів продажу за підрозділами")
+```
+
+
+Проаналізуємо останні 2 роки, щоб зрозуміти, за рахунок чого збільшилась середня сума - зростання кількості товарів/SKU, або середньої ціни.
+
+```{r}
+sale_data_detailed <- sale_service_data_detailed_fn(
+    date_finish + years(2000) - years(2),
+    date_finish + years(2000))
+
+sale_items_df <- sale_data_detailed %>% 
+    filter(!is.na(customer_id)) %>% 
+    left_join(select(ref_customers, customer_id, customer_type, edrp_code)) %>% 
+    
+    # Видалємо кінцевих покупців
+    filter(!(is.na(customer_type) & edrp_code == "")) %>% 
+    
+    mutate(subdiv_id = case_when(
+               subdiv_id == "000000246"  ~ "000000191",  # Луцьк Ков. -> Луцьк серв.
+               subdiv_id == "000000236"  ~ "000000168",  # PROM -> Интернет-магазин                         
+               TRUE                      ~ subdiv_id)) %>% 
+    
+    group_by(customer_id, subdiv_id, sale_doc_date, item_id) %>% 
+    summarise(doc_item_sale = sum(item_sum),
+              doc_item_qty = sum(item_qty),
+              doc_item_profit = sum(item_sum) - sum(item_cost_sum)) %>% 
+    ungroup() %>% 
+    filter(doc_item_qty > 0) %>% 
+    
+    mutate(year = year(sale_doc_date)) 
+
+sale_items_data <- sale_items_df %>%     
+    group_by(year, customer_id) %>% 
+    summarise(total_sale = sum(doc_item_sale),
+              total_item_qty = sum(doc_item_qty),
+              avr_qty_price = round(total_sale / total_item_qty),
+              sku_qty = length(unique(item_id))) %>% 
+    ungroup() %>%
+    left_join(select(ref_customers, customer_id, customer_type))
+```
+
+```{r}
+data_median_item_qty <- sale_items_data %>%
+    filter(!is.na(customer_type)) %>% 
+    group_by(year, customer_type) %>% 
+    summarise(med = round(median(total_item_qty)))
+
+sale_items_data %>%
+    filter(!is.na(customer_type)) %>% 
+    ggplot(aes(x = factor(year), y = total_item_qty, fill = customer_type)) +
+    geom_boxplot() +
+    geom_text(data = data_median_item_qty, aes(factor(year), med, label = med),
+              position = position_dodge(width = 0.8), size = 3, vjust = -0.5) +
+    scale_y_log10(labels = scales::comma) +
+    scale_fill_manual(values = c("#EE865D", "#59BEC4")) +
+    ggthemes::theme_economist_white() +
+    labs(x = "", y = "Кіл-ть", fill = "Тип покупця",
+         title = "Середня кількість проданих одиниць покупцям")
+```
+
+```{r}
+data_median_sku_qty <- sale_items_data %>%
+    filter(!is.na(customer_type)) %>% 
+    group_by(year, customer_type) %>% 
+    summarise(med = round(median(sku_qty)))
+
+sale_items_data %>%
+    filter(!is.na(customer_type)) %>% 
+    ggplot(aes(x = factor(year), y = sku_qty, fill = customer_type)) +
+    geom_boxplot() +
+    geom_text(data = data_median_sku_qty, aes(factor(year), med, label = med),
+              position = position_dodge(width = 0.8), size = 3, vjust = -0.5) +
+    scale_y_log10(labels = scales::comma) +
+    scale_fill_manual(values = c("#EE865D", "#59BEC4")) +
+    ggthemes::theme_economist_white() +
+    labs(x = "", y = "Кіл-ть SKU", fill = "Тип покупця",
+         title = "Середня кількість SKU на покупця")
+```
+
+```{r}
+subdiv_sku_data <- sale_items_df %>%
+    filter(year == 2022,
+           subdiv_id %in% total_sale_subdiv$subdiv_id) %>% 
+    group_by(subdiv_id, customer_id, item_id) %>%
+    summarise(customer_item_sum = sum(doc_item_sale)) %>% 
+    ungroup() %>% 
+    filter(customer_item_sum > 10) %>% 
+    count(subdiv_id, customer_id, name = "sku_qty") %>% 
+    ungroup() %>% 
+    left_join(ref_subdiv)
+
+subdiv_median_sku_qty <- subdiv_sku_data %>%
+    group_by(subdiv_name) %>% 
+    summarise(med = round(median(sku_qty))) %>% 
+    arrange(desc(med))
+
+subdiv_sku_data$subdiv_name <- factor(
+    subdiv_sku_data$subdiv_name,
+    levels = subdiv_median_sku_qty$subdiv_name)
+
+subdiv_sku_data %>%
+    ggplot(aes(x = subdiv_name, y = sku_qty)) +
+    geom_boxplot(fill = "#59BEC4") +
+    geom_text(data = subdiv_median_sku_qty, aes(factor(subdiv_name), med, label = med),
+              position = position_dodge(width = 0.8), size = 2.5, hjust = -0.3) +
+    scale_y_log10(labels = scales::comma) +
+    coord_flip() +
+
+    theme_bw() +
+    labs(x = "", y = "Кіл-ть SKU", fill = "Тип покупця",
+         title = "Середня кількість SKU на покупця  по підрозділам")
+```
+
+
+```{r}
+data_median_avr_qty_price <- sale_items_data %>%
+    filter(!is.na(customer_type)) %>% 
+    group_by(year, customer_type) %>% 
+    summarise(med = round(median(avr_qty_price)))
+
+sale_items_data %>%
+    filter(!is.na(customer_type)) %>% 
+    ggplot(aes(x = factor(year), y = avr_qty_price, fill = customer_type)) +
+    geom_boxplot() +
+    geom_text(data = data_median_avr_qty_price, aes(factor(year), med, label = med),
+              position = position_dodge(width = 0.8), size = 3, vjust = -0.5) +
+    scale_y_log10(labels = scales::comma) +
+    scale_fill_manual(values = c("#EE865D", "#59BEC4")) +
+    ggthemes::theme_economist_white() +
+    labs(x = "", y = "Ціна, грн", fill = "Тип покупця",
+         title = "Середня ціна одиниці за рік")
+```
+
+З наведених графіків можна зробити висновок, що причиною зростання середньої суми накладної є збільшення середньої ціни одиниці проданих товарів на `r round((mean(data_median_avr_qty_price$med[data_median_avr_qty_price$year == "2022"]) -
+    mean(data_median_avr_qty_price$med[data_median_avr_qty_price$year == "2021"])) / 
+    mean(data_median_avr_qty_price$med[data_median_avr_qty_price$year == "2022"])*100)`%.
+
+Порівняємо з зростанням средньої ціни на номенклатурну групу "1.1.1.2.3 Папір офісний А4 класс С"
+
+```{r}
+paper_sale_data <- sale_items_df %>% 
+    left_join(select(ref_items, item_id, group_id), by = "item_id") %>% 
+    filter(group_id %in% "000002195") %>% 
+    mutate(paper_price = doc_item_sale / doc_item_qty) %>% 
+    left_join(select(ref_customers, customer_id, customer_type))
+
+data_median_avr_paper_price <- paper_sale_data %>%
+    filter(!is.na(customer_type)) %>% 
+    group_by(year, customer_type) %>% 
+    summarise(med = round(median(paper_price)))
+
+paper_sale_data %>%
+    filter(!is.na(customer_type)) %>% 
+    ggplot(aes(x = factor(year), y = paper_price, fill = customer_type)) +
+    geom_boxplot() +
+    geom_text(data = data_median_avr_paper_price, aes(factor(year), med, label = med),
+              position = position_dodge(width = 0.8), size = 3, vjust = -0.5) +
+    scale_y_log10(labels = scales::comma) +
+    scale_fill_manual(values = c("#EE865D", "#59BEC4")) +
+    ggthemes::theme_economist_white() +
+    labs(x = "", y = "Ціна, грн", fill = "Тип покупця",
+         title = "Середня ціна одиниці паперу по покупцям")
+```
+
+Таким чином, зростання продажів пояснюється значним (більш ніж у 2 рази) зростанням цін на товари.
+
+
+Подивимось, як зростання цін вплинуло на прибутковість:
+
+```{r}
+sale_data_common %>% 
+    mutate(year = year(sale_doc_date)) %>% 
+    group_by(year) %>% 
+    summarise(total_sale = sum(doc_sale_sum),
+              total_profit = sum(gross_profit)) %>% 
+    mutate(margin = round(total_profit / total_sale, 3)) %>% 
+    ggplot(aes(x = year, label = scales::percent(margin, accuracy = 0.1))) +
+    geom_col(aes(y = total_sale, fill = "Продаж")) +
+    geom_col(aes(y = total_profit, fill = "Вал.прибуток")) +
+    geom_text(aes(y = total_profit/2), size = 3.5) +
+    scale_y_continuous(label = scales::comma) +
+    labs(x = "", y = "", fill = "",
+         title = "Рентабельність продажу по роках") +
+    ggthemes::theme_economist_white() +
+    theme(legend.position = "top",
+          axis.text.x = element_text(size = 10),
+          axis.text.y = element_text(size = 8),
+          legend.text = element_text(size = 8),
+          legend.spacing.x = unit(0.3, 'cm'),
+          #legend.text.align = 0.8,
+          panel.grid.minor.x = element_blank(),
+          panel.grid.major.x = element_blank()
+          ) +
+    scale_fill_manual(values = c("Продаж" = "#59BEC4",
+                                 "Вал.прибуток" = "#88C785"))
+```
+
+
+Проаналізуємо місячну сезонність:
+
+```{r}
+sales_monthly <- sale_data_common %>% 
+    summarise_by_time(sale_doc_date, .by = "month",
+                      sales = round(sum(doc_sale_sum) / 1000000, 1)) %>% 
+    mutate(year  = year(sale_doc_date),
+           month = month(sale_doc_date, label = TRUE))
+
+sales_monthly %>% 
+    ggplot(aes(month, sales, group = year, color = factor(year))) +
+    geom_line(linewidth = 1.5) +
+    labs(x = "", y = "Продажі, млн.грн", color = "Рік",
+         title = "Щомісячні продажі у 2018-2022рр.") +
+    ggthemes::theme_economist_white() +
+    ggthemes::scale_color_stata()
+```
+
+У березні 2020 і особливо 2022 років відбулися "нетипічні" падіння, спричинені локдауном та початком війни, тому дані цього місяця при подальшому аналізу сезонності не будуть об'єктивними.
+
+Розкладемо наші продажі на компоненти (тренд, созонність та випадковість) та проаналізуємо сезонність:
+
+```{r}
+monthly_ts <- ts(
+    data = sales_monthly$sales,
+    start = range(sales_monthly$sale_doc_date)[[1]],
+    frequency = 12)
+
+dc_month <- decompose(monthly_ts)    
+
+monthly_season <- sales_monthly %>% 
+    mutate(seasonal = dc_month$seasonal) %>% 
+    filter(sale_doc_date >= date_finish - years(2)) %>% 
+    group_by(month) %>% 
+    summarise(avr_seasonal = round(mean(seasonal), 2)) %>%
+    mutate(col_var = ifelse(avr_seasonal > 0,
+                            1,
+                            0)) %>% 
+    ggplot(aes(x = month, y = avr_seasonal, fill = factor(col_var),
+               text = str_glue("Місяць: {month}
+                               Сезонність: {avr_seasonal}млн.грн."))) +
+    geom_col() +
+    scale_fill_manual(values = c("#F7BD7B", "#C0D996")) +
+    theme_minimal() +
+    labs(y = "Сезонність", x = "", fill = "",
+         title = "Місячна сезонність у останні 2 роки, млн.грн") +
+    theme(legend.position = "none")
+
+plotly::ggplotly(monthly_season, tooltip = "text")
+```
+
+
+Квартальна сезонність:
+
+```{r}
+sales_quarterly <- sale_data_common %>% 
+    summarise_by_time(sale_doc_date, .by = "quarter",
+                      sales = round(sum(doc_sale_sum) / 1000000, 1)) %>% 
+    mutate(year    = year(sale_doc_date),
+           quarter = paste0(quarter(sale_doc_date), "кв"))
+
+sales_quarterly %>% 
+    ggplot(aes(quarter, sales, group = year, color = factor(year))) +
+    geom_line(linewidth = 1.5) +
+    labs(x = "", y = "Продажі, млн.грн", color = "Рік",
+         title = "Щоквартальні продажі у 2018-2022рр.") +
+    ggthemes::theme_economist_white() +
+    ggthemes::scale_color_stata()
+```
+
+```{r}
+quarterly_ts <- ts(
+    data = sales_quarterly$sales,
+    start = range(sales_monthly$sale_doc_date)[[1]],
+    frequency = 4)
+
+dc_quarter <- decompose(quarterly_ts)    
+
+quarterly_season <- sales_quarterly %>% 
+    mutate(seasonal = dc_quarter$seasonal) %>% 
+    filter(sale_doc_date >= date_finish - years(2)) %>% 
+    group_by(quarter) %>% 
+    summarise(avr_seasonal = round(mean(seasonal), 2)) %>%
+    mutate(col_var = ifelse(avr_seasonal > 0,
+                            1,
+                            0)) %>% 
+    ggplot(aes(x = quarter, y = avr_seasonal, fill = factor(col_var),
+               text = str_glue("Квартал: {quarter}
+                               Сезонність: {avr_seasonal}млн.грн."))) +
+    geom_col() +
+    scale_fill_manual(values = c("#F7BD7B", "#C0D996")) +
+    theme_minimal() +
+    labs(y = "Сезонність", x = "", fill = "",
+         title = "Квартальна сезонність у останні 2 роки, млн.грн") +
+    theme(legend.position = "none")
+
+plotly::ggplotly(quarterly_season, tooltip = "text")
+```
+
+
+## Структура продажу
+
+За типами покупців:
+
+```{r}
+sale_type_data <- sale_years_data %>% 
+    filter(year >= 2020,
+           !is.na(customer_type)) %>% 
+    group_by(year, customer_type) %>% 
+    summarise(type_sale = sum(total_sale),
+              type_profit = sum(total_profit)) %>%
+    ungroup()
+
+sale_type_data %>%
+    group_by(year) %>% 
+    mutate(type_prop = type_sale / sum(type_sale)) %>% 
+    ungroup() %>% 
+    
+    mutate(year = factor(year),
+           customer_type = factor(customer_type)) %>% 
+    
+    ggplot(aes(x = year, y = type_prop, fill = customer_type)) +
+    geom_col() + 
+    #scale_x_discrete(limits = c(" ", "2020","2021","2022")) +
+    #coord_polar("y") +
+    scale_y_continuous(breaks = seq(0, 1, .2), 
+                       label = scales::percent) +
+    labs(fill = "Тип покупця", x = "", y = "Частка",
+         title = "Структура продажу за типами покупців") +
+    ggthemes::theme_economist_white() +
+    ggthemes::scale_fill_economist()
+```
+
+У 2022р. відбулось незначне збільшення частки бюджетних покупців. Подивимось, чи відрізняються вони за рентабельністю:
+
+```{r}
+sale_type_data %>% 
+    mutate(profitibility = round(type_profit / type_sale, 3)) %>% 
+    ggplot(aes(x = factor(year), y = profitibility, fill = customer_type)) +
+    geom_col(position = "dodge") +
+    geom_text(aes(factor(year), label = scales::percent(profitibility)),
+              position = position_dodge(width = 0.8), size = 3, vjust = -0.5) +
+    scale_y_continuous(labels = scales::percent) +
+    scale_fill_manual(values = c("#EE865D", "#59BEC4")) +
+    ggthemes::theme_economist_white() +
+    labs(x = "", y = "", fill = "Тип покупця",
+         title = "Рентабельність продажу покупців")
+```
+
+
+За каналами продажу:
+
+```{r}
+p1 <- sale_data_common %>% 
+    filter(sale_doc_date > as.Date("2020-01-01")) %>% 
+    mutate(year = year(sale_doc_date)) %>% 
+    
+    group_by(year, subdiv_id, project_id) %>% 
+    summarise(proj_subdiv_sale = sum(doc_sale_sum)) %>% 
+    
+    mutate(channel = case_when(
+        project_id %in% c("000000017", "000000019", "000000020", "000000021") |
+            subdiv_id %in% "0000000249"             ~ "Тендер",
+        subdiv_id %in% c("000000236","000000168")   ~ "Інтернет",
+        TRUE                                        ~ "Традиц.")) %>% 
+    
+    group_by(year, channel) %>% 
+    summarise(channel_sale = sum(proj_subdiv_sale)) %>%
+    ungroup() %>%
+    group_by(year) %>% 
+    mutate(channel_prop = channel_sale / sum(channel_sale)) %>% 
+    ungroup() %>% 
+    
+    mutate(year = factor(year),
+           channel = factor(channel)) %>% 
+    
+    ggplot(aes(x = year, y = channel_prop, fill = channel,
+               text = format(channel_sale, big.mark = "'"))) +
+    geom_col() + 
+    #scale_x_discrete(limits = c(" ", "2020","2021","2022")) +
+    #coord_polar("y") +
+    scale_y_continuous(breaks = seq(0, 1, .1), 
+                       label = scales::percent) +
+    labs(fill = "Канал", x = "", y = "Частка",
+         title = "Структура продажу за каналами") +
+    ggthemes::theme_economist_white() +
+    ggthemes::scale_fill_economist()
+
+plotly::ggplotly(p1, tooltip = "text")    
+```
+
+В останні 2 роки збільшується частка нетрадиційних каналів - інтернет-продаж та особливо тендерних продаж - в 2022р. їх частка склала вже більше 10%.
+
+За сегментами покупців:
+
+```{r}
+segment_sale_data <- sale_data_common %>% 
+    filter(sale_doc_date > as.Date("2020-01-01")) %>% 
+    mutate(year = year(sale_doc_date)) %>% 
+    left_join(select(ref_customers, customer_id, segment_form),
+              by = "customer_id") %>% 
+    
+    group_by(year, segment_form) %>% 
+    summarise(segment_sale = sum(doc_sale_sum)) %>% 
+    ungroup() %>% 
+    arrange(desc(year), desc(segment_sale))
+
+best_segments <- segment_sale_data %>% 
+    slice(1:10) %>% 
+    pull(segment_form)
+
+segment_sale_data %>% 
+    filter(segment_form %in% best_segments) %>% 
+    mutate(year = factor(year),
+           segment_sale = round(segment_sale/1000000, 1)) %>% 
+    CGPfunctions::newggslopegraph(year, segment_sale, segment_form) +
+    labs(title = "Продажі ТОП-10 сегментів по рокам (млн.грн)", subtitle = "",
+         caption ="", x = "", y = "") +
+    ggthemes::theme_economist_white() +
+    ggthemes::scale_color_stata() +
+    theme(legend.position = "none")
+```
+
+В останній рік відбулося значне зростання продажів у перших 5-х сегментах: `r segment_sale_data$segment_form[1]`; `r segment_sale_data$segment_form[2]`; `r segment_sale_data$segment_form[3]`; `r segment_sale_data$segment_form[4]`, і особливо у сегменті `r segment_sale_data$segment_form[5]`.
+
+
+За давністю покупців (постійні - купували хоча б раз у попередньому році, нові - здійснили першу покупку у звітному році, повернені - не нові і не купували у попередньому році):
+
+```{r}
+customer_sale_data <- sale_data_common %>% 
+    #filter(sale_doc_date > as.Date("2019-01-01")) %>% 
+    mutate(year = year(sale_doc_date)) %>% 
+    left_join(select(ref_customers, customer_id, main_cust_id),
+              by = "customer_id") %>% 
+    
+    group_by(year, main_cust_id) %>% 
+    summarise(customer_sale = sum(doc_sale_sum)) %>% 
+    ungroup() %>% 
+    
+    complete(year, main_cust_id) %>% 
+    filter(!is.na(main_cust_id))%>% 
+    arrange(main_cust_id, year) %>%
+    
+    group_by(main_cust_id) %>% 
+    mutate(first_purch_year = min(year[!is.na(customer_sale)]),
+           prev_year_sum = lag(customer_sale)) %>% 
+
+    rowwise() %>% 
+    mutate(type_cust = case_when(
+        year == first_purch_year                       ~ "Нові",
+        is.na(customer_sale)                           ~ "Втрачені",
+        year > first_purch_year & is.na(prev_year_sum) ~ "Повернені",
+        TRUE                                           ~ "Постійні"
+    )) %>% 
+    ungroup()
+
+p2 <- customer_sale_data %>% 
+    filter(year >= 2020) %>% 
+    group_by(year, type_cust) %>% 
+    summarise(type_sale = sum(customer_sale, na.rm = TRUE)) %>%
+    ungroup() %>%
+    group_by(year) %>% 
+    mutate(type_prop = type_sale / sum(type_sale)) %>% 
+    ungroup() %>%
+    filter(!type_cust %in% "Втрачені") %>% 
+    
+    mutate(year = factor(year),
+           type = factor(type_cust)) %>% 
+    
+    ggplot(aes(x = year, y = type_prop, fill = type,
+               text = format(type_sale, big.mark = "'"))) +
+    geom_col() + 
+    #scale_x_discrete(limits = c(" ", "2020","2021","2022")) +
+    #coord_polar("y") +
+    scale_y_continuous(breaks = seq(0, 1, .1), 
+                       label = scales::percent) +
+    labs(fill = "Тип", x = "", y = "Частка",
+         title = "Стркутура продажу за давністю покупців") +
+    ggthemes::theme_economist_white() +
+    ggthemes::scale_fill_economist()
+
+plotly::ggplotly(p2, tooltip = "text")
+```
+
+
+Цікаво порівняти суму поврнених покупців з сумою втрачених покупців - тих, хто купував у попередньому році:
+
+```{r}
+customer_sale_data %>%
+    filter(type_cust %in% "Втрачені" & !is.na(prev_year_sum),
+           year >= 2020) %>% 
+    group_by(year) %>% 
+    summarise(lost_sum = round(sum(prev_year_sum) / 1000, 1)) %>% 
+    ggplot(aes(x = year, y = lost_sum, label = lost_sum)) +
+    geom_col(fill = ggthemes::economist_pal()(1)) + 
+    geom_text(vjust = -0.5) +
+    # scale_y_continuous(breaks = seq(0, 1, .1), 
+    #                    label = scales::percent) +
+    labs(x = "", y = "Сума, тис.грн",
+         title = "Сума продажу втрачених покупців") +
+    ggthemes::theme_economist_white()
+```
+
+
+
+За областями:
+
+```{r}
+region_sale_data <- sale_data_common %>% 
+    mutate(year = year(sale_doc_date),
+           region = case_when(
+               subdiv_id %in% "000000180"       ~ "Вінницька",
+               subdiv_id %in% "000000140"       ~ "Чернівецька",
+               subdiv_id %in% "000000225"       ~ "Ів-Франківська",
+               subdiv_id %in% c("000000228",
+                                "000000193")    ~ "Рівненська",
+               subdiv_id %in% c("000000139",
+                                "000000242")    ~ "Тернопільська",
+               subdiv_id %in% c("000000191",
+                                "000000192",
+                                "000000194",
+                                "000000195",
+                                "000000217",
+                                "000000233",
+                                "000000246")    ~ "Волинська",
+               TRUE                             ~ "Хмельницька"
+           )) %>% 
+    
+    group_by(year, region) %>% 
+    summarise(region_sale = sum(doc_sale_sum)) %>%
+    ungroup() %>% 
+    
+    group_by(year) %>% 
+    mutate(region_prop = region_sale / sum(region_sale)) %>% 
+    ungroup()
+    
+region_sale_data %>% 
+    filter(year >= 2020) %>% 
+    ggplot(aes(x = year, y = region_prop, fill = region,
+               label = scales::percent(region_prop, accuracy = 0.1))) +
+    geom_col() + 
+    geom_text(aes(y = region_prop),
+              position=position_stack(0.5), size=3) +
+    scale_y_continuous(breaks = seq(0, 1, .2), 
+                       label = scales::percent) +
+    labs(fill = "Область", x = "", y = "Частка",
+         title = "Структура продажу за областями") +
+    ggthemes::theme_economist_white() +
+    ggthemes::scale_fill_economist()
+```
+
+Динаміка продажу по кожній області (млн.грн):
+
+```{r}
+region_sale_data %>% 
+    mutate(region_sale = round(region_sale / 1000000, 1)) %>% 
+    ggplot(aes(x = year, y = region_sale)) +
+    geom_line(color = ggthemes::economist_pal()(1),
+              linewidth = 1) +
+    facet_wrap(~region, ncol = 2, scales = "free_y") +
+    labs(x = "", y = "",
+         title = "Динаміка продажу за областями, млн.грн") +
+    ggthemes::theme_economist_white() +
+    ggthemes::scale_fill_economist()
+```
+
+
+За підрозділами у 2022р. (тис.грн та темп росту у порівнянні з попереднім роком):
+
+```{r}
+subdiv_sale_data <- sale_data_common %>% 
+    filter(sale_doc_date >= as.Date("2021-01-01")) %>% 
+    mutate(year = year(sale_doc_date)) %>%
+    
+    group_by(year, subdiv_id) %>% 
+    summarise(subdiv_sale = round(sum(doc_sale_sum) / 1000, 1)) %>% 
+    ungroup() %>% 
+    
+    pivot_wider(names_from = year,
+                values_from = subdiv_sale) %>% 
+    filter(!is.na(`2022`),
+           `2022` > 50) %>% 
+    mutate(change = round(`2022` / `2021`, 2)) %>% 
+    left_join(ref_subdiv, by = "subdiv_id")
+
+max_value = max(subdiv_sale_data$`2022`)
+
+subdiv_sale_data %>% 
+    ggplot(aes(x = reorder(subdiv_name, `2022`), y = `2022`,
+               label = change)) +
+    geom_col(fill = ggthemes::economist_pal()(6)[5]) + 
+    geom_text(aes(y = `2022`), hjust = "inward", size=3) +
+    coord_flip() +
+    scale_y_continuous(expand = c(0, 0)) +
+    theme_bw() +
+    labs(x = "", y = "Сума",
+         title = "Структура продажу за підрозділами (з ТР)") +
+    theme(panel.grid.major.y = element_blank())
+```
+
+
+
+## Аналіз асортименту
+
+Подииимось, чи змінюється з часом структура продажу за категорійними напрямками:
+
+```{r}
+category_sale_data <- sale_items_df %>% 
+    left_join(select(ref_items, item_id, group_id), by = "item_id") %>% 
+    left_join(select(ref_item_group, group_id, category_name)) %>% 
+    filter(!is.na(category_name)) %>% 
+    mutate(category_name = case_when(
+        str_detect(category_name, "^0[89]") ~ "Стільці та мебель",
+        str_detect(category_name, "^1")     ~ "Інші",
+        TRUE                                ~ category_name
+    )) %>% 
+    group_by(year, category_name) %>% 
+    summarise(category_sale = sum(doc_item_sale),
+              category_profit = sum(doc_item_profit)) %>% 
+    group_by(year) %>% 
+    mutate(category_prop = category_sale / sum(category_sale)) %>% 
+    ungroup() %>% 
+    mutate(cat_profitibility = round(category_profit / category_sale, 3),
+           year = factor(year))
+
+p4 <- category_sale_data %>%
+    mutate(category_name = fct_rev(category_name)) %>% 
+    ggplot(aes(x = year, y = category_prop, fill = category_name,
+               label = scales::percent(category_prop, accuracy = 0.1),
+               text = paste0(category_name , ": ",
+                             format(category_sale, big.mark = "'")))) +
+    geom_col() + 
+    geom_text(aes(y = category_prop),
+              position=position_stack(0.5), size=3) +
+    scale_y_continuous(breaks = seq(0, 1, .2), 
+                       label = scales::percent) +
+    labs(fill = "Категор.напрямок", x = "", y = "",
+         title = "Структура продажу за категорійним напрямками)") +
+    ggthemes::theme_economist_white() +
+    ggthemes::scale_fill_economist()
+
+plotly::ggplotly(p4, tooltip = "text")
+```
+
+Ми бачимо значне зростання частки паперу офісного у 2022р. Також можна побачити зменшення не тільки частки а й абсолютного значення по деяких категорійних напрямках (особливо оргтехніки). 
+
+Цікаво, яка частка продажу паперу офісного у 2022р по підрозділам:
+
+```{r}
+sale_items_df %>% 
+    filter(year == 2022,
+           subdiv_id %in% total_sale_subdiv$subdiv_id) %>% 
+    left_join(select(ref_items, item_id, group_id), by = "item_id") %>% 
+    left_join(select(ref_item_group, group_id, category_name)) %>% 
+    filter(!is.na(category_name)) %>%
+    group_by(subdiv_id) %>% 
+    summarise(total_sale_sum = sum(doc_item_sale),
+              paper_sale_sum = sum(doc_item_sale[
+                  category_name == "01. Папір офісний"])) %>% 
+    mutate(paper_prop = round(paper_sale_sum / total_sale_sum, 2)) %>% 
+    left_join(ref_subdiv, by = "subdiv_id") %>% 
+    
+    ggplot(aes(x = reorder(subdiv_name, paper_prop), y = paper_prop,
+               label = scales::percent(paper_prop))) +
+    geom_col(fill = ggthemes::economist_pal()(6)[5]) + 
+    geom_text(aes(y = paper_prop), hjust = "inward", size=3) +
+    coord_flip() +
+    scale_y_continuous(expand = c(0, 0)) +
+    theme_bw() +
+    labs(x = "", y = "",
+         title = "Частка продажу паперу офісного за підрозділами") +
+    theme(panel.grid = element_blank(),
+          axis.text.x = element_blank(),
+          panel.border = element_blank())
+```
+
+
+Рентабельність категорійних напрямків:
+
+```{r}
+category_sale_data %>% 
+    select(year, category_name, cat_profitibility) %>% 
+    pivot_wider(names_from = year,
+                values_from = cat_profitibility,
+                names_prefix = "year_") %>% 
+    mutate(category_name = fct_reorder(category_name, year_2022),
+           col_var = ifelse(year_2022 > year_2022,
+                            "1", "0")) %>% 
+    
+    ggplot(aes(x = year_2021, xend = year_2022, y = category_name,
+               group = category_name)) +    
+    geom_dumbbell(aes(color = col_var),
+        colour = "#a3c4dc",
+        colour_xend = "#0e668b",
+        size = 4,
+        #size_xend = 4,
+        dot_guide = TRUE,
+        dot_guide_size = 0.15,
+        dot_guide_colour = "grey60"
+    ) +
+    scale_color_manual(values = c( "#a3c4dc", "#0e668b")) +
+    labs(title = "<span style='font-size:12pt'>Рентабельність категорій у
+                  <span style='color:#a3c4dc;'>2021</span> та
+                  <span style='color:#0e668b;'>2022</span>рр.",
+         x = "Рентабельність", y = "") +
+    scale_x_continuous(label = scales::percent) +
+    tidyquant::theme_tq() +
+    theme(plot.title = element_markdown(),
+          panel.grid.minor = element_blank(),
+          panel.grid.major.y = element_blank(),
+          panel.grid.major.x = element_line(),
+          axis.ticks = element_blank(),
+          panel.border = element_blank())
+```
+
+
+```{r}
+items_3lev_group <- sale_items_df %>% 
+    distinct(item_id) %>% 
+    required_hierarchy_level_group() %>% 
+    left_join(select(ref_item_group, group_id, lev_group_name = group_name),
+              by = c("lev_group" = "group_id"))
+
+group_sale_data <- sale_items_df %>% 
+    left_join(select(items_3lev_group, item_id, lev_group), by = "item_id") %>%
+    group_by(year, lev_group) %>% 
+    summarise(group_sale = sum(doc_item_sale)) %>% 
+    ungroup() %>% 
+    arrange(desc(year), desc(group_sale)) %>% 
+    group_by(year) %>% 
+    mutate(prop = group_sale / sum(group_sale),
+           cum_prop = cumsum(prop)) %>% 
+    ungroup()
+```
+
+
+ТОП-10 номенклатурних груп з загальною часткою `r round((group_sale_data$cum_prop[11] - group_sale_data$cum_prop[1]) * 100, 1)`% 
+(без урахування групи "1.1.01 Папір офісний", частка якої складає `r round(group_sale_data$prop[1] * 100, 1)`%):
+
+```{r}
+best_groups <- group_sale_data %>% 
+    slice(2:11) %>% 
+    pull(lev_group)
+
+group_sale_data %>% 
+    filter(lev_group %in% best_groups) %>% 
+    left_join(select(ref_item_group, group_id, group_name),
+              by = c("lev_group" = "group_id")) %>% 
+    mutate(year = factor(year),
+           group_sale = round(group_sale/1000000, 1)) %>%
+    select(year, group_sale, group_name) %>% 
+    
+    pivot_wider(names_from = year,
+                values_from = group_sale,
+                names_prefix = "year_") %>% 
+    mutate(group_name = fct_reorder(group_name, year_2022),
+           col_var = ifelse(year_2022 > year_2022,
+                            "1", "0")) %>% 
+    
+    ggplot(aes(x = year_2021, xend = year_2022, y = group_name,
+               group = group_name)) +    
+    geom_dumbbell(aes(color = col_var),
+        colour = "#a3c4dc",
+        colour_xend = "#0e668b",
+        size = 4,
+        #size_xend = 4,
+        dot_guide = TRUE,
+        dot_guide_size = 0.15,
+        dot_guide_colour = "grey60"
+    ) +
+    scale_color_manual(values = c( "#a3c4dc", "#0e668b")) +
+    labs(title = "<span style='font-size:12pt'>ТОП-10 номенклатурних груп у
+                  <span style='color:#a3c4dc;'>2021</span> та
+                  <span style='color:#0e668b;'>2022</span>рр. за сумою",
+         x = "Сума, млн.грн", y = "") +
+    tidyquant::theme_tq() +
+    theme(plot.title = element_markdown(),
+          panel.grid.minor = element_blank(),
+          panel.grid.major.y = element_blank(),
+          panel.grid.major.x = element_line(),
+          axis.ticks = element_blank(),
+          panel.border = element_blank())
+```
+
+
+Порівняємо, чи збігаються вони з групами, що у 2022р. найщастіще перезамовлялися покупцями (кількість покупців, які хоча б 2 рази повторно купляли цю групу):
+
+```{r}
+sale_items_df %>%
+    filter(year == 2022) %>% 
+    left_join(select(items_3lev_group, item_id, lev_group), by = "item_id") %>%
+    filter(!lev_group %in% "000000552") %>%
+    group_by(customer_id, sale_doc_date, lev_group) %>% 
+    summarise(group_sale = sum(doc_item_sale)) %>% 
+    ungroup() %>% 
+    count(customer_id, lev_group) %>%
+    filter(n > 2) %>% 
+    count(lev_group) %>% 
+    arrange(desc(n)) %>% 
+    slice(1:10) %>% 
+    left_join(select(ref_item_group, group_id, group_name),
+                     by = c("lev_group" = "group_id")) %>%
+    ggplot(aes(x = reorder(group_name, n), y = n, label = n)) +
+    geom_col(fill = ggthemes::economist_pal()(1)) + 
+    geom_label(hjust = 0.9) +
+    scale_y_continuous(expand = c(0, 0)) +
+    coord_flip() +
+    labs(x = "", y = "",
+         title = "Групи, що найбільш перезамовляються покупцями") +
+    ggthemes::theme_economist_white() +
+    theme(axis.text.y = element_text(size = 10),
+          axis.text.x = element_blank(),
+          panel.grid.major = element_blank(),
+          axis.ticks.x = element_blank(),
+          axis.line.x = element_blank(),
+          plot.title.position = "plot"
+    )
+```
+
+
+ТОП-10 SKU (без урахування тих, що входять до групи "1.1.01 Папір офісний"):
+
+```{r}
+items_sale_data <- sale_items_df %>% 
+    left_join(select(items_3lev_group, item_id, lev_group), by = "item_id") %>%
+    filter(!lev_group %in% "000000552") %>% 
+    group_by(year, item_id) %>% 
+    summarise(item_sale = sum(doc_item_sale)) %>% 
+    ungroup() %>% 
+    arrange(desc(year), desc(item_sale))
+
+
+best_items <- items_sale_data %>% 
+    slice(1:10) %>% 
+    pull(item_id)
+
+items_sale_data %>% 
+    filter(item_id %in% best_items) %>% 
+    left_join(select(ref_items, item_id, item_name),
+              by = "item_id") %>% 
+    mutate(year = factor(year),
+           item_sale = round(item_sale/1000, 1)) %>%
+    select(year, item_sale, item_name) %>% 
+    
+    pivot_wider(names_from = year,
+                values_from = item_sale,
+                names_prefix = "year_") %>% 
+    replace_na(list(year_2021 = 0)) %>% 
+    mutate(item_name = fct_reorder(item_name, year_2022),
+           col_var = ifelse(year_2022 > year_2022,
+                            "1", "0")) %>% 
+    
+    ggplot(aes(x = year_2021, xend = year_2022, y = item_name,
+               group = item_name)) +    
+    geom_dumbbell(aes(color = col_var),
+        colour_x = "#a3c4dc",
+        colour_xend = "#0e668b",
+        size = 4,
+        #size_xend = 4,
+        dot_guide = TRUE,
+        dot_guide_size = 0.15,
+        dot_guide_colour = "grey60"
+    ) +
+    scale_color_manual(values = c( "#a3c4dc", "#0e668b")) +
+    labs(title = "<span style='font-size:12pt'>ТОП-10 номенклатурних груп у
+                  <span style='color:#a3c4dc;'>2021</span> та
+                  <span style='color:#0e668b;'>2022</span>рр. за сумою",
+         x = "Сума, тис.грн", y = "") +
+    tidyquant::theme_tq() +
+    theme(plot.title = element_markdown(),
+          panel.grid.minor = element_blank(),
+          panel.grid.major.y = element_blank(),
+          panel.grid.major.x = element_line(),
+          axis.ticks = element_blank(),
+          panel.border = element_blank())
+```
+
+
+## Рейтинг підрозділів за розглянутими показниками
+
+```{r}
+rating_df <- gmrol_subdiv %>%
+    select(subdiv_id, subdiv_name, gmrol, service_factor) %>% 
+    left_join(select(total_sale_subdiv, subdiv_id, cust_growth = total_growth),
+              by = "subdiv_id") %>% 
+    left_join(select(avr_customer_median, subdiv_name, avr_cust_sum = med),
+              by = "subdiv_name") %>% 
+    left_join(select(subdiv_median_sku_qty, subdiv_name, avr_cust_sku = med),
+              by = "subdiv_name") %>% 
+    
+    mutate(across(where(is.numeric),  ~ min_rank(desc(.)))) %>%
+    rowwise() %>% 
+    mutate(total_score = rowSums(across(where(is.numeric))) + gmrol) %>% 
+    ungroup() %>% 
+    mutate(total_score = min_rank(total_score)) %>% 
+    select(-subdiv_id) %>% 
+    arrange(total_score) %>% 
+    rename("Підрозділ" = subdiv_name,
+           "Рейтинг GMROL" = gmrol,
+           "Рейтинг серв.факт." = service_factor,
+           "Рейтинг ТР (кіл.покупц.)" = cust_growth,
+           "Рейтинг сер.суми" = avr_cust_sum,
+           "Рейтинг SKU на покуп." = avr_cust_sku,
+           "Загальний рейтинг" = total_score)
+
+library(reactable)
+
+rating_df %>% 
+    reactable(striped = TRUE, pagination = FALSE,
+              highlight = TRUE,
+              columns = list(
+                  "Підрозділ" = colDef(minWidth = 130),
+                  "Рейтинг GMROL" = colDef(maxWidth = 80),
+                 "Рейтинг сер.суми" = colDef(maxWidth = 80),
+                 
+                  "Загальний рейтинг" = colDef(style= list(fontWeight = "bold",
+                                               background = "#D3AE7C",
+                                               maxWidth = 80)
+                  )
+                  ),
+              bordered = TRUE
+    )
+```
+
+
+
+## Висновки
+
+Зріст продажів у 2022р. спричинений лише значним зростанням цін, кількість покупців залишилась приблизно на тому ж рівні, середня кількість проданих одиниць одному покупцю зменшилась, так само як і середня кількість SKU.
+
+Найбільше зростання відбулося у категорії "Папір офісний", частка якої перевищила 50%. Таке значне зростання не позначилось на загальній рентабельності, так як рентабельність цієї категорії збільшилась на `r category_sale_data$data_label[category_sale_data$category_name == "01. Папір офісний" & category_sale_data$year == 2022] -category_sale_data$data_label[category_sale_data$category_name == "01. Папір офісний" & category_sale_data$year == 2021]`%. Однак турбує те, що у останні місяці року вона зменшилась вдвічі.
+
+Тому при плануванні на наступний рік визначальними будуть темпи зростання цін, частка категорії "Папір офісний", її рентабельність та чи відбудеться подальше зменшення середньої кількості проданих одиниць одному покупцю. Бажано зменшити частку цієї категорії за рахунок категорій з більш високою рентабельністю.
+
+Також варто відзначити, що у останні місяці 2022року почала збільшуватися частка бюджетних покупців, а у грудні вони вперше переважили корпоративних покупців по сумі продаж. Мабуть до закінчення війни цей тренд збережеться. Однак треба усвідомлювати, що продажі бюджетним покупцям мають меньшу рентабельність.

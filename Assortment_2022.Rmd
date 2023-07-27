@@ -1,0 +1,1172 @@
+---
+title: "Звіт з управління асортименту за 2022р."
+output:
+   html_document:
+     theme: flatly
+     toc: true
+     toc_float: TRUE
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE, out.width = '100%')
+
+library(tidyverse)
+library(lubridate)
+library(timetk)
+library(ggalt)
+library(ggtext)
+
+Sys.setlocale(locale = "uk-UA.UTF-8")
+
+source("script/collect_data.R")
+source("script/functions.R")
+
+date_finish <- as.Date("2023-01-01")
+
+date_for_balance <- seq.Date(date_finish - months(12), date_finish, by = "month")
+```
+
+```{r}
+cost_data_retail_2022 <- cost_retail_data_detailed_fn(
+    date_finish + years(2000) - months(12),
+    date_finish + years(2000)) %>% 
+    mutate(subdiv_id = ifelse(subdiv_id == "000000189",
+                              "000000007",
+                              subdiv_id))
+
+cost_data_retail_2021 <- cost_retail_data_detailed_fn(
+    date_finish + years(2000) - months(24),
+    date_finish + years(2000) - months(12)) %>% 
+    mutate(subdiv_id = ifelse(subdiv_id == "000000189",
+                              "000000007",
+                              subdiv_id))
+
+sale_data_retail_2022 <- sale_retail_data_detailed_fn(
+    date_finish + years(2000) - months(12),
+    date_finish + years(2000)) %>% 
+    mutate(subdiv_id = ifelse(subdiv_id == "000000189",
+                              "000000007",
+                              subdiv_id))
+
+sale_data_retail_2021 <- sale_retail_data_detailed_fn(
+    date_finish + years(2000) - months(24),
+    date_finish + years(2000) - months(12)) %>% 
+    mutate(subdiv_id = ifelse(subdiv_id == "000000189",
+                              "000000007",
+                              subdiv_id))
+
+sale_data_service_2022 <- sale_service_data_detailed_fn(
+    date_finish + years(2000) - months(12),
+    date_finish + years(2000))
+
+sale_data_service_2021 <- sale_service_data_detailed_fn(
+    date_finish + years(2000) - months(24),
+    date_finish + years(2000) - months(12))
+
+# inventory_data_2022 <- tibble(
+#     date = seq.Date(date_finish - months(12), date_finish, by = "month")) %>%
+#     mutate(inventory = map(date + years(2000), inventory_data_fn)) %>%
+#     unnest(cols = c(inventory))
+
+# write_rds(inventory_data_2022, "data/inventory_data_2022.rds")
+inventory_data_2022 <- read_rds("data/inventory_data_2022.rds")
+
+# inventory_data_2021 <- tibble(
+#     date = seq.Date(date_finish - months(24), date_finish - months(12),
+#                     by = "month")) %>% 
+#     mutate(inventory = map(date + years(2000), inventory_data_fn)) %>% 
+#     unnest(cols = c(inventory))
+
+# write_rds(inventory_data_2021, "data/inventory_data_2021.rds")
+inventory_data_2021 <- read_rds("data/inventory_data_2021.rds")
+```
+
+## Аналіз категорійних напрямків
+
+```{r}
+cost_data_retail_items_2022 <- cost_data_retail_2022 %>% 
+    group_by(item_id) %>% 
+    summarise(item_cost_sum = sum(item_cost_sum))
+
+cost_data_retail_items_2021 <- cost_data_retail_2021 %>% 
+    group_by(item_id) %>% 
+    summarise(item_cost_sum = sum(item_cost_sum))
+
+sale_retail_category_2022 <- sale_data_retail_2022 %>% 
+    group_by(item_id) %>% 
+    summarise(item_sum = sum(item_sum),
+              item_retail_qty = sum(item_qty)) %>% 
+    filter(item_retail_qty != 0) %>% 
+    left_join(cost_data_retail_items_2022, by = "item_id") %>% 
+    replace_na(list(item_cost_sum = 0)) %>% 
+    mutate(item_retail_profit = item_sum - item_cost_sum) %>% 
+    left_join(select(ref_items, item_id, group_id)) %>% 
+    left_join(select(ref_item_group, group_id, category_name)) %>% 
+    filter(!is.na(category_name)) %>% 
+    group_by(category_name) %>% 
+    summarise(category_retail_profit = sum(item_retail_profit),
+              category_retail_cost = sum(item_cost_sum),
+              category_retail_qty = sum(item_retail_qty))
+
+sale_retail_category_2021 <- sale_data_retail_2021 %>% 
+    group_by(item_id) %>% 
+    summarise(item_sum = sum(item_sum),
+              item_retail_qty = sum(item_qty)) %>% 
+    filter(item_retail_qty != 0) %>% 
+    left_join(cost_data_retail_items_2021, by = "item_id") %>% 
+    replace_na(list(item_cost_sum = 0)) %>% 
+    mutate(item_retail_profit = item_sum - item_cost_sum) %>% 
+    left_join(select(ref_items, item_id, group_id)) %>% 
+    left_join(select(ref_item_group, group_id, category_name)) %>% 
+    filter(!is.na(category_name)) %>% 
+    group_by(category_name) %>% 
+    summarise(category_retail_profit = sum(item_retail_profit),
+              category_retail_cost = sum(item_cost_sum),
+              category_retail_qty = sum(item_retail_qty))
+
+sale_service_category_2022 <- sale_data_service_2022 %>% 
+    group_by(item_id) %>% 
+    summarise(item_sum = sum(item_sum),
+              item_cost_sum = sum(item_cost_sum),
+              item_service_qty = sum(item_qty)) %>% 
+    filter(item_service_qty != 0) %>% 
+    mutate(item_service_profit = item_sum - item_cost_sum) %>% 
+    left_join(select(ref_items, item_id, group_id)) %>% 
+    left_join(select(ref_item_group, group_id, category_name)) %>% 
+    filter(!is.na(category_name)) %>% 
+    group_by(category_name) %>% 
+    summarise(category_service_profit = sum(item_service_profit),
+              category_service_cost = sum(item_cost_sum),
+              category_service_qty = sum(item_service_qty))
+
+sale_service_category_2021 <- sale_data_service_2021 %>% 
+    group_by(item_id) %>% 
+    summarise(item_sum = sum(item_sum),
+              item_cost_sum = sum(item_cost_sum),
+              item_service_qty = sum(item_qty)) %>% 
+    filter(item_service_qty != 0) %>% 
+    mutate(item_service_profit = item_sum - item_cost_sum) %>% 
+    left_join(select(ref_items, item_id, group_id)) %>% 
+    left_join(select(ref_item_group, group_id, category_name)) %>% 
+    filter(!is.na(category_name)) %>% 
+    group_by(category_name) %>% 
+    summarise(category_service_profit = sum(item_service_profit),
+              category_service_cost = sum(item_cost_sum),
+              category_service_qty = sum(item_service_qty))
+
+inventory_category_2022_data <- inventory_data_2022 %>% 
+    left_join(select(ref_items, item_id, group_id)) %>% 
+    left_join(select(ref_item_group, group_id, category_name)) %>% 
+    filter(!is.na(category_name)) %>% 
+    group_by(date, category_name) %>% 
+    summarise(category_balance_sum = sum(total_item_sum)) %>% 
+    ungroup()
+
+inventory_category_2022 <- inventory_category_2022_data %>% 
+    group_by(category_name) %>%
+    summarise(category_avr_balance_2022 = (sum(category_balance_sum) -
+                  category_balance_sum[date == date_for_balance[1]]/2 - 
+                  category_balance_sum[date == date_for_balance[13]]/2) / 12)
+
+inventory_category_2021 <- inventory_data_2021 %>% 
+    left_join(select(ref_items, item_id, group_id)) %>% 
+    left_join(select(ref_item_group, group_id, category_name)) %>% 
+    filter(!is.na(category_name)) %>% 
+    group_by(date, category_name) %>% 
+    summarise(category_balance_sum = sum(total_item_sum)) %>% 
+    group_by(category_name) %>%
+    summarise(category_avr_balance_2021 = (sum(category_balance_sum) -
+                  category_balance_sum[date == (date_for_balance[1] - months(12))]/2 - 
+                  category_balance_sum[date == (date_for_balance[13] - months(12))]/2) / 12)
+
+gmroi_category_2022 <- sale_retail_category_2022 %>% 
+    left_join(sale_service_category_2022, by = "category_name") %>% 
+    mutate(category_profit_2022 = category_service_profit + category_retail_profit,
+           category_cost_2022   = category_service_cost + category_retail_cost) %>% 
+    select(category_name, category_profit_2022, category_cost_2022) %>% 
+    left_join(inventory_category_2022, by = "category_name") %>%
+    mutate(gmroi_2022 = round(category_profit_2022 / category_avr_balance_2022, 2),
+           inv_turnover_2022 = round(1 / (category_cost_2022 /
+                                              category_avr_balance_2022) * 360,1))
+
+total_gmroi_2022 <- round(sum(gmroi_category_2022$category_profit_2022) /
+                              sum(gmroi_category_2022$category_avr_balance_2022), 2)
+
+total_inv_turnover_2022 <- round(1 / (sum(gmroi_category_2022$category_profit_2022) /
+                              sum(gmroi_category_2022$category_avr_balance_2022))*360,
+                              1)
+
+total_margin_2022 <- round(sum(gmroi_category_2022$category_profit_2022) /
+                              sum(gmroi_category_2022$category_cost_2022),
+                              3)
+
+gmroi_category_2021 <- sale_retail_category_2021 %>% 
+    left_join(sale_service_category_2021, by = "category_name") %>% 
+    mutate(category_profit_2021 = category_service_profit + category_retail_profit,
+           category_cost_2021   = category_service_cost + category_retail_cost) %>% 
+    select(category_name, category_profit_2021, category_cost_2021) %>% 
+    left_join(inventory_category_2021, by = "category_name") %>%
+    mutate(gmroi_2021 = round(category_profit_2021 / category_avr_balance_2021, 2),
+           inv_turnover_2021 = round(1 / (category_cost_2021 /
+                                              category_avr_balance_2021) * 360,1))
+
+total_gmroi_2021 <- round(sum(gmroi_category_2021$category_profit_2021) /
+                              sum(gmroi_category_2021$category_avr_balance_2021), 2)
+total_inv_turnover_2021 <- round(1 / (sum(gmroi_category_2021$category_profit_2021) /
+                              sum(gmroi_category_2021$category_avr_balance_2021))*360,
+                              1)
+total_margin_2021 <- round(sum(gmroi_category_2021$category_profit_2021) /
+                              sum(gmroi_category_2021$category_cost_2021),
+                              3)
+
+gmroi_category_2022 %>% 
+    filter(category_name != "15. Копіцентр") %>% 
+    left_join(select(gmroi_category_2021, category_name, gmroi_2021),
+              by = "category_name") %>% 
+    mutate(category_name = fct_reorder(category_name, gmroi_2022),
+           col_var = ifelse(gmroi_2022 > gmroi_2021,
+                            "1", "0")) %>% 
+    
+    ggplot(aes(x = gmroi_2021, xend = gmroi_2022, y = category_name,
+               group = category_name)) +
+    
+    geom_dumbbell(aes(color = col_var),
+        colour_x = "#a3c4dc",
+        #color = plot$col_var,
+        colour_xend = "#0e668b",
+        size = 4,
+        #size_xend = 4,
+        dot_guide = TRUE,
+        dot_guide_size = 0.15,
+        dot_guide_colour = "grey60"
+    ) +
+    scale_color_manual(values = c( "#a3c4dc", "#0e668b")) +
+    labs(title = "<span style='font-size:12pt'>GMROI кат.напрямків у
+                  <span style='color:#a3c4dc;'>2021</span> та
+                  <span style='color:#0e668b;'>2022</span>рр.",
+         subtitle = paste0("<span style='font-size:10pt'>Загальні значення - 
+                  <span style='color:#a3c4dc;'>", total_gmroi_2021, "</span> та
+                  <span style='color:#0e668b;'>", total_gmroi_2022, "</span>"),
+         x = "", y = "", color = "") +
+    tidyquant::theme_tq() +
+    theme(plot.title = element_markdown(),
+          plot.subtitle = element_markdown(),
+          legend.position = "none",
+          panel.grid.minor = element_blank(),
+          panel.grid.major.y = element_blank(),
+          panel.grid.major.x = element_line(),
+          axis.ticks = element_blank(),
+          panel.border = element_blank())
+```
+
+
+Складовими GMROI є валовий прибуток та середні залишки. Порівняємо, як вони змінились по кожному з категорійних напрямків:
+
+```{r}
+gmroi_category_2022_change <- gmroi_category_2022 %>% 
+    left_join(select(gmroi_category_2021, category_name, category_profit_2021,
+                     category_cost_2021, category_avr_balance_2021)) %>% 
+    mutate(profit_change = round(category_profit_2022 /
+                                     category_profit_2021 - 1, 2),
+           avr_balance_change = round(category_avr_balance_2022 /
+                                          category_avr_balance_2021 - 1, 2))
+
+
+avr_profit_change <- sum(gmroi_category_2022_change$category_profit_2022) /
+    sum(gmroi_category_2022_change$category_profit_2021) - 1
+    
+avr_balance_change <- sum(gmroi_category_2022_change$category_avr_balance_2022) /
+    sum(gmroi_category_2022_change$category_avr_balance_2021) - 1
+    
+gmroi_category_2022_change %>% 
+    select(category_name, profit_change, avr_balance_change) %>% 
+    pivot_longer(cols = 2:3,
+                 names_to = "type",
+                 values_to = "value") %>% 
+    
+    ggplot(aes(x = value, y = category_name)) +
+    geom_linerange(aes(xmin = ifelse(value > 0,
+                                     0,
+                                     value),
+                       xmax = ifelse(value < 0,
+                                     0,
+                                     value),
+                   color = type),
+                   size=1.5, alpha=0.5, position = position_dodge(width = 0.6))+
+    geom_point(aes(x = value, color = type), size = 3,
+               position = position_dodge(width = 0.6)) +
+    geom_vline(xintercept = avr_profit_change, color = 'forestgreen', size = 1) +
+    geom_text(x = avr_profit_change + 0.05, y = "06. Успішний керівник",
+              label = "Загальний", angle = 90, size = 2.5, color = 'forestgreen') +
+    geom_vline(xintercept = avr_balance_change, color = 'gold', size = 1) +
+    theme_light() +
+    scale_x_continuous(label = scales::percent) +
+    scale_color_manual(labels = c('залишки', 'прибуток'),
+                       values = c('gold', 'forestgreen')) +
+    labs(x = '', y = '', color = '') +
+    theme(legend.position = "top",
+          panel.grid.major.y = element_blank(), 
+          panel.border = element_blank(),
+          axis.ticks.y = element_blank(),
+          # legend.text.align = 0.1,
+          # legend.spacing.x = unit(0.3, 'cm')
+          )
+```
+
+
+Найбільший вплив на загальний показник GMROI мають напрямки з найбільшими значеннями залишків:
+
+```{r}
+gmroi_category_2022 %>% 
+    left_join(inventory_category_2022_data %>% 
+                  filter(date == date_finish) %>% 
+                  select(category_name, category_balance_sum),
+              by = "category_name") %>% 
+    
+    mutate(category_name = fct_reorder(category_name, category_balance_sum),
+           col_var = ifelse(category_balance_sum > category_avr_balance_2022,
+                            "1", "0")) %>% 
+    
+    ggplot(aes(x = category_avr_balance_2022, xend = category_balance_sum,
+               y = category_name,
+               group = category_name)) +
+    
+    geom_dumbbell(aes(color = col_var),
+        colour_x = "#a3c4dc",
+        #color = plot$col_var,
+        colour_xend = "#0e668b",
+        size = 4,
+        #size_xend = 4,
+        dot_guide = TRUE,
+        dot_guide_size = 0.15,
+        dot_guide_colour = "grey60"
+    ) +
+    scale_x_continuous(label = scales::comma) +
+    scale_color_manual(values = c( "#a3c4dc", "#0e668b")) +
+    labs(title = "Залишки за категорійними напрямками у 2022р.",
+         subtitle = "<span style='color:#a3c4dc;'> Середні за рік </span> та
+                  <span style='color:#0e668b;'> на кінець року</span>",
+         x = "", y = "", color = "") +
+    tidyquant::theme_tq() +
+    theme(plot.title = element_markdown(),
+          plot.subtitle = element_markdown(),
+          legend.position = "none",
+          panel.grid.minor = element_blank(),
+          panel.grid.major.y = element_blank(),
+          panel.grid.major.x = element_line(),
+          axis.ticks = element_blank(),
+          panel.border = element_blank())
+```
+
+
+Формулу GMROI можна розкласти на 2 показника - націнку та оборотність запасів:  
+
+Вал.прибуток / Запаси = (Вал.прибуток / Собівартість) * (Собівартість / Запаси)
+
+Подивимось, як змінювався кожний з цих показників:
+
+```{r}
+gmroi_category_2022 %>% 
+    filter(category_name != "15. Копіцентр") %>% 
+    left_join(select(gmroi_category_2021, category_name, inv_turnover_2021),
+              by = "category_name") %>% 
+    mutate(category_name = fct_reorder(category_name, inv_turnover_2022,
+                                       .desc = TRUE),
+           col_var = ifelse(inv_turnover_2022 > inv_turnover_2021,
+                            "1", "0")
+           ) %>% 
+    
+    ggplot(aes(x = inv_turnover_2021, xend = inv_turnover_2022, y = category_name,
+               group = category_name)) +
+    
+    geom_dumbbell(aes(color = col_var),
+        colour_x = "#a3c4dc",
+        colour_xend = "#0e668b",
+        size = 4,
+        #size_xend = 4,
+        dot_guide = TRUE,
+        dot_guide_size = 0.15,
+        dot_guide_colour = "grey60"
+    ) +
+    scale_color_manual(values = c("#0e668b", "#a3c4dc")) +
+    labs(title = "<span style='font-size:12pt'>Період обороту запасів кат.напрямків у
+                  <span style='color:#a3c4dc;'>2021</span> та
+                  <span style='color:#0e668b;'>2022</span>рр.",
+         subtitle = paste0("<span style='font-size:10pt'>Загальні значення - 
+                  <span style='color:#a3c4dc;'>", total_inv_turnover_2021, "</span> та
+                  <span style='color:#0e668b;'>", total_inv_turnover_2022, "</span> днів"),
+         x = "Дні", y = "") +
+    tidyquant::theme_tq() +
+    theme(plot.title = element_markdown(),
+          plot.subtitle = element_markdown(),
+          legend.position = "none",
+          panel.grid.minor = element_blank(),
+          panel.grid.major.y = element_blank(),
+          panel.grid.major.x = element_line(),
+          axis.ticks = element_blank(),
+          panel.border = element_blank())
+```
+
+
+```{r}
+gmroi_category_2022_change %>% 
+    filter(category_name != "15. Копіцентр") %>%
+    mutate(cat_margin_2021 = round(category_profit_2021 / category_cost_2021, 3),
+           cat_margin_2022 = round(category_profit_2022 / category_cost_2022, 3),
+           category_name = fct_reorder(category_name, cat_margin_2022,
+                                       .desc = TRUE),
+           col_var = ifelse(cat_margin_2022 > cat_margin_2021,
+                            "1", "0")
+           ) %>% 
+    
+    ggplot(aes(x = cat_margin_2021, xend = cat_margin_2022, y = category_name,
+               group = category_name)) +
+    
+    geom_dumbbell(aes(color = col_var),
+        colour_x = "#a3c4dc",
+        colour_xend = "#0e668b",
+        size = 4,
+        #size_xend = 4,
+        dot_guide = TRUE,
+        dot_guide_size = 0.15,
+        dot_guide_colour = "grey60"
+    ) +
+    scale_x_continuous(label = scales::percent) +
+    scale_color_manual(values = c("#a3c4dc", "#0e668b")) +
+    labs(title = "<span style='font-size:12pt'>Націнка категорійних напрямків у
+                  <span style='color:#a3c4dc;'>2021</span> та
+                  <span style='color:#0e668b;'>2022</span>рр.",
+         subtitle = paste0("<span style='font-size:10pt'>Загальні значення - 
+                  <span style='color:#a3c4dc;'>", total_margin_2021*100, "</span>% та
+                  <span style='color:#0e668b;'>", total_margin_2022*100, "</span>%"),
+         x = "", y = "") +
+    tidyquant::theme_tq() +
+    theme(plot.title = element_markdown(),
+          plot.subtitle = element_markdown(),
+          legend.position = "none",
+          panel.grid.minor = element_blank(),
+          panel.grid.major.y = element_blank(),
+          panel.grid.major.x = element_line(),
+          axis.ticks = element_blank(),
+          panel.border = element_blank())
+```
+
+
+Найбільший вплив на загальний GMROI має значне зростання націнки на папір офісний. Проаналізуємо, як вона змінювалась протягом року:
+
+
+```{r}
+paper_retail_cost_2022 <- cost_data_retail_2022 %>% 
+    left_join(select(ref_items, item_id, group_id)) %>% 
+    left_join(select(ref_item_group, group_id, category_name)) %>% 
+    filter(category_name == "01. Папір офісний") %>%
+    mutate(month = month(date, label = TRUE)) %>% 
+    group_by(month) %>% 
+    summarise(paper_retail_cost = sum(item_cost_sum))
+
+paper_service_sale <- sale_data_service_2022 %>% 
+    left_join(select(ref_items, item_id, group_id)) %>% 
+    left_join(select(ref_item_group, group_id, category_name)) %>% 
+    filter(category_name == "01. Папір офісний") %>%
+    mutate(month = month(sale_doc_date, label = TRUE)) %>% 
+    group_by(month) %>% 
+    summarise(paper_service_sale = sum(item_sum),
+              paper_service_cost = sum(item_cost_sum))
+
+paper_retail_sale_2022 <- sale_data_retail_2022 %>% 
+    left_join(select(ref_items, item_id, group_id)) %>% 
+    left_join(select(ref_item_group, group_id, category_name)) %>% 
+    filter(category_name == "01. Папір офісний") %>%
+    mutate(month = month(date, label = TRUE)) %>% 
+    group_by(month) %>% 
+    summarise(paper_retail_sale = sum(item_sum)) %>% 
+    left_join(paper_retail_cost_2022)
+
+total_paper_sale_2022 <- left_join(
+    paper_retail_sale_2022, paper_service_sale,
+    by = "month") %>% 
+    mutate(month_margin = round((paper_retail_sale + paper_service_sale -
+                                    (paper_retail_cost + paper_service_cost)) /
+                                    (paper_retail_cost + paper_service_cost),
+                                3))
+
+total_paper_sale_2022 %>% 
+    ggplot(aes(x = month, y = month_margin)) +
+    geom_col(fill = "#a3c4dc") + 
+    scale_y_continuous(labels = scales::percent) +
+    labs(x = "", y = "",
+         title = "Щомісячна націнка по категорії 'Папір офісний' у 2022р.") +
+    tidyquant::theme_tq()
+```
+
+
+Проведемо більш детальний аналіз - номенклатурних груп 3 рівня ієрерхії:
+
+
+```{r}
+items_2022 <- sale_data_retail_2022 %>% 
+    distinct(item_id) %>% 
+    union(distinct(sale_data_service_2022, item_id))
+
+items_3lev_group <- items_2022 %>% 
+    required_hierarchy_level_group() %>% 
+    left_join(select(ref_item_group, group_id, lev_group_name = group_name),
+              by = c("lev_group" = "group_id"))
+
+sale_group_retail_cost <- cost_data_retail_2022 %>% 
+    left_join(select(items_3lev_group, item_id, lev_group), by = "item_id") %>% 
+    group_by(lev_group) %>% 
+    summarise(retail_group_cost = sum(item_cost_sum)) %>% 
+    filter(!is.na(lev_group),
+           !lev_group %in% c("000001083",   # Торг.обладн.
+                             "000003129",   # Зразки
+                             "000003206",   # Готова кава
+                             "000001912",   # Бонус
+                             "000003589"    # Подар.сертиф.
+           ))
+
+sale_group_retail <- sale_data_retail_2022 %>% 
+    left_join(select(items_3lev_group, item_id, lev_group), by = "item_id") %>% 
+    group_by(lev_group) %>% 
+    summarise(retail_group_sale = sum(item_sum)) %>% 
+    filter(!is.na(lev_group),
+           !lev_group %in% c("000001083",   # Торг.обладн.
+                             "000003129",   # Зразки
+                             "000003206",   # Готова кава
+                             "000001912",   # Бонус
+                             "000003589"    # Подар.сертиф.
+           )) %>% 
+    left_join(sale_group_retail_cost, by = "lev_group") %>% 
+    mutate(retail_profit = retail_group_sale - retail_group_cost) %>% 
+    select(lev_group, retail_profit)
+
+sale_group_service <- sale_data_service_2022 %>% 
+    left_join(select(items_3lev_group, item_id, lev_group), by = "item_id") %>% 
+    group_by(lev_group) %>% 
+    summarise(service_group_sale = sum(item_sum),
+              service_group_cost = sum(item_cost_sum)) %>% 
+    filter(!is.na(lev_group),
+           !lev_group %in% c("000001083",   # Торг.обладн.
+                             "000003129",   # Зразки
+                             "000003206",   # Готова кава
+                             "000001912",   # Бонус
+                             "000003589",   # Подар.сертиф.
+                             "000002121",   # Оказание услуг возврат комун.
+                             "000002125"    # МШП
+           )) %>% 
+    mutate(service_profit = service_group_sale - service_group_cost) %>% 
+    select(lev_group, service_profit)
+
+inventory_group_2022 <- inventory_data_2022 %>% 
+    left_join(select(items_3lev_group, item_id, lev_group), by = "item_id") %>% 
+    group_by(date, lev_group) %>% 
+    summarise(group_balance_sum = sum(total_item_sum)) %>% 
+    group_by(lev_group) %>% 
+    summarise(group_balance_sum = round(mean(group_balance_sum, na.rm = TRUE))) %>% 
+    filter(!is.na(lev_group),
+           !lev_group %in% c("000001083",   # Торг.обладн.
+                             "000003129",   # Зразки
+                             "000003206",   # Готова кава
+                             "000001912",   # Бонус
+                             "000003589"    # Подар.сертиф.
+           ))
+
+gmroi_group <- sale_group_retail %>% 
+    full_join(sale_group_service, by = "lev_group") %>% 
+    full_join(inventory_group_2022, by = "lev_group") %>% 
+    mutate(across(where(is.numeric), replace_na, 0),
+           group_gmroi = round((retail_profit + service_profit) /
+                               group_balance_sum, 2
+               )) %>% 
+    left_join(select(items_3lev_group, lev_group, lev_group_name) %>% 
+                  distinct(),
+              by = "lev_group") %>% 
+    filter(!str_detect(lev_group_name, "(Виготовлення)|(Послуг)"),
+           !is.infinite(group_gmroi)) %>% 
+    arrange(desc(group_gmroi))
+
+
+gmroi_group %>% 
+    select(lev_group_name, group_gmroi, group_balance_sum, retail_profit,
+           service_profit) %>% 
+    DT::datatable(rownames = FALSE,
+                  colnames = c('Ном.група', 'GMROI', 'Сер.залишки',
+                               'Вал.приб.В2С', 'Вал.приб.В2В'),
+                  filter = 'top',
+                  extensions = c('Buttons'),
+                  options = list(
+                      dom = 'Brtp',
+                      buttons = 'excel'
+                  )) %>% 
+    DT::formatRound(3:5, digits = 0, mark = "'")
+```
+
+Аналіз результатів:  
+- з усіх `r nrow(gmroi_group)` груп лише `r sum(gmroi_group$group_gmroi >= total_gmroi_2022)` груп мають значення GMROI вище ніж загальний (`r total_gmroi_2022`);  
+- найбільше значення GMROI мають групи, у яких невисоке значення залишків та більшу частину валового прибутку генерують В2В продажів. 
+
+
+Проаналізуємо більш детально групи, середні залишки за рік по яким склали більше 1млн.грн:
+
+```{r}
+hard_group <- gmroi_group %>% 
+    filter(group_balance_sum >= 1000000) %>% 
+    pull(lev_group)
+
+sale_hard_group_retail_cost_2021 <- cost_data_retail_2021 %>% 
+    left_join(select(items_3lev_group, item_id, lev_group), by = "item_id") %>% 
+    filter(lev_group %in% hard_group) %>% 
+    group_by(lev_group) %>% 
+    summarise(retail_group_cost = sum(item_cost_sum))
+
+sale_hard_group_retail_2021 <- sale_data_retail_2021 %>% 
+    left_join(select(items_3lev_group, item_id, lev_group), by = "item_id") %>%
+    filter(lev_group %in% hard_group) %>%
+    group_by(lev_group) %>% 
+    summarise(retail_group_sale = sum(item_sum)) %>% 
+    left_join(sale_hard_group_retail_cost_2021, by = "lev_group") %>% 
+    mutate(retail_profit_2021 = retail_group_sale - retail_group_cost) %>% 
+    select(lev_group, retail_profit_2021)
+
+sale_hard_group_service_2021 <- sale_data_service_2021 %>% 
+    left_join(select(items_3lev_group, item_id, lev_group), by = "item_id") %>% 
+    filter(lev_group %in% hard_group) %>%
+    group_by(lev_group) %>% 
+    summarise(service_group_sale = sum(item_sum),
+              service_group_cost = sum(item_cost_sum)) %>% 
+    mutate(service_profit_2021 = service_group_sale - service_group_cost) %>% 
+    select(lev_group, service_profit_2021)
+
+inventory_hard_group_2021 <- inventory_data_2021 %>% 
+    left_join(select(items_3lev_group, item_id, lev_group), by = "item_id") %>%
+    filter(lev_group %in% hard_group) %>%
+    group_by(date, lev_group) %>% 
+    summarise(group_balance_sum = sum(total_item_sum)) %>% 
+    group_by(lev_group) %>% 
+    summarise(group_balance_sum_2021 = round(mean(group_balance_sum, na.rm = TRUE)))
+
+gmroi_hard_group_change <- gmroi_group %>% 
+    filter(lev_group %in% hard_group) %>%
+    left_join(sale_hard_group_retail_2021, by = "lev_group") %>% 
+    left_join(sale_hard_group_service_2021, by = "lev_group") %>%
+    left_join(inventory_hard_group_2021, by = "lev_group") %>% 
+    mutate(profit_change = round((retail_profit + service_profit)/
+                                     (retail_profit_2021 + service_profit_2021) - 1,
+                                 2),
+           avr_balance_change = round(group_balance_sum /
+                                          group_balance_sum_2021 - 1, 2),
+           gmroi_change = round(group_gmroi/
+                                     ((retail_profit_2021 + service_profit_2021)/
+                                         group_balance_sum_2021) - 1,
+                                 2))
+
+gmroi_hard_group_change %>%
+    select(lev_group_name, profit_change, avr_balance_change, gmroi_change) %>% 
+    pivot_longer(cols = 2:4,
+                 names_to = "type",
+                 values_to = "value") %>% 
+    
+    ggplot(aes(x = value, y = lev_group_name)) +
+    geom_linerange(aes(xmin = ifelse(value > 0,
+                                     0,
+                                     value),
+                       xmax = ifelse(value < 0,
+                                     0,
+                                     value),
+                   color = type),
+                   size=1.5, alpha=0.5, position = position_dodge(width = 0.6))+
+    geom_point(aes(x = value, color = type), size = 3,
+               position = position_dodge(width = 0.6)) +
+    theme_light() +
+    scale_x_continuous(label = scales::percent) +
+    scale_color_manual(labels = c('Залишки', 'GMROI', 'Вал.приб.'),
+                       values = c('gold', "#a3c4dc", 'forestgreen')) +
+    labs(x = '', y = '', color = '') +
+    theme(legend.position = "top",
+          panel.grid.major.y = element_blank(), 
+          panel.border = element_blank(),
+          axis.ticks.y = element_blank(),
+          # legend.text.align = 0.1,
+          # legend.spacing.x = unit(0.3, 'cm')
+          )
+```
+
+
+У `r sum(gmroi_hard_group_change$gmroi_change < 0)` груп GMROI зменшився, так як зростання залишків перевищило зростання валового прибутку, а у групи "`r gmroi_hard_group_change$lev_group_name[gmroi_hard_group_change$profit_change < 0]`" валовий прибуток навіть зменшився. При цьому тільки у `r sum(gmroi_hard_group_change$group_gmroi > total_gmroi_2022)` груп GMROI за рік вище ніж загальний.
+
+
+Очевидь, що для підвищення загального GMROI необхідно сконцетруватись на групах, що мають найвищі залишки.
+
+
+Для прикладу проведемо більш детальний аналіз групи "4.1.2 Матеріали для художніх робіт", яка має 2-й показник з середніх залишків і низький GMROI (`r gmroi_hard_group_change$group_gmroi[gmroi_hard_group_change$lev_group_name == "4.1.2 Матеріали для художніх робіт"]`).
+
+```{r}
+sale_focus_items_retail_cost <- cost_data_retail_2022 %>% 
+    left_join(select(items_3lev_group, item_id, lev_group), by = "item_id") %>%
+    filter(lev_group == "000002554") %>% 
+    group_by(item_id) %>% 
+    summarise(retail_focus_items_cost = sum(item_cost_sum))
+
+sale_focus_items_retail <- sale_data_retail_2022 %>% 
+    left_join(select(items_3lev_group, item_id, lev_group), by = "item_id") %>%
+    filter(lev_group == "000002554") %>% 
+    group_by(item_id) %>% 
+    summarise(retail_item_sale = sum(item_sum),
+              retail_item_docs = n_distinct(nmbr_checks_report)) %>% 
+    left_join(sale_focus_items_retail_cost, by = "item_id") %>% 
+    mutate(retail_item_profit = retail_item_sale - retail_focus_items_cost) %>% 
+    select(item_id, retail_item_profit, retail_item_docs)
+
+sale_focus_items_service <- sale_data_service_2022 %>% 
+    left_join(select(items_3lev_group, item_id, lev_group), by = "item_id") %>% 
+    filter(lev_group == "000002554") %>%
+    group_by(item_id) %>% 
+    summarise(service_item_sale = sum(item_sum),
+              service_item_cost = sum(item_cost_sum),
+              service_item_docs = n_distinct(sale_doc_nmbr)) %>% 
+    mutate(service_item_profit = service_item_sale - service_item_cost) %>% 
+    select(item_id, service_item_profit, service_item_docs)
+
+inventory_focus_items <- inventory_data_2022 %>% 
+    left_join(select(items_3lev_group, item_id, lev_group), by = "item_id") %>%
+    filter(lev_group == "000002554") %>%
+    group_by(date, item_id) %>% 
+    summarise(item_balance_sum = sum(total_item_sum)) %>% 
+    group_by(item_id) %>% 
+    summarise(item_balance_sum = round(mean(item_balance_sum, na.rm = TRUE)))
+
+planogram_data <- planogram_data_fn(date_finish + years(2000))
+
+planogram_items <- planogram_data %>% 
+    group_by(item_id) %>% 
+    summarise(total_facing = sum(facing) + sum(norm))
+
+focus_items_data <- sale_focus_items_retail %>% 
+    full_join(sale_focus_items_service, by = "item_id") %>% 
+    full_join(inventory_focus_items, by = "item_id") %>% 
+    mutate(across(where(is.numeric), replace_na, 0),
+           total_item_profit = round(retail_item_profit - service_item_profit)) %>%
+    select(-retail_item_profit, -service_item_profit) %>% 
+    left_join(inventory_data_2022 %>%
+                  left_join(select(items_3lev_group, item_id, lev_group),
+                            by = "item_id") %>%
+                  filter(lev_group == "000002554",
+                         date == as.Date("2023-01-01")) %>% 
+                  group_by(item_id) %>% 
+                  summarise(last_balance_sum = round(sum(total_item_sum))),
+              by = "item_id") %>% 
+    left_join(select(ref_items, item_id, is_tva), by = "item_id") %>% 
+    left_join(planogram_items, by = "item_id") %>% 
+    filter(!(is.na(last_balance_sum) & (is_tva | is.na(total_facing)))) %>% 
+    mutate(type = case_when(
+        !is.na(total_facing) & !is_tva  ~ "Основний",
+        is_tva                          ~ "ТВА",
+        is.na(total_facing) & !is_tva   ~ "Неосновний"
+    ))
+
+# avr_focus_profit <- round(median(focus_items_data$total_item_profit))
+# 
+# avr_focus_balance <- round(median(focus_items_data$item_balance_sum))
+
+fig <- focus_items_data %>% 
+    left_join(select(ref_items, item_id, item_name), by = "item_id") %>% 
+    mutate(label_text = str_glue("Ном.группа: {item_name}
+                                  Вал.прибуток: {total_item_profit}
+                                  Залишки: {last_balance_sum}
+                                  Чеки: {retail_item_docs}
+                                  Документи: {service_item_docs}")) %>% 
+    ggplot(aes(x = item_balance_sum, y = total_item_profit)) +
+    scale_x_continuous(n.breaks = 6,
+                       labels = scales::comma) +
+    scale_y_continuous(n.breaks = 5,
+                       labels = scales::comma) +
+    geom_point(aes(text = label_text, color = type), alpha = 0.4) + 
+    scale_color_manual(values = c("#59BEC4", "#6A953F", "#EE865D")) +
+    # geom_vline(aes(xintercept = avr_focus_balance),
+    #            linetype = "dashed", size = 1) +
+    # geom_hline(aes(yintercept = avr_focus_profit),
+    #            linetype = "dashed", size = 1) +
+    geom_abline(intercept = 0, slope = 1.81,
+                color = "red", linetype = "dashed", size = 1) +
+    annotate("text", x = 35000, y = 45000, label = "Загальний GMROI",
+             color = "red") +
+    ggalt::geom_encircle(data = filter(focus_items_data,
+                                         total_item_profit < item_balance_sum * 2),
+                           expand=0) +
+    labs (y = "Валовий прибуток",
+          x = "Середні залишки",
+          color = "Тип номенклатури",
+          title = "Детальний аналіз групи") +
+    theme_minimal()
+
+plotly::ggplotly(fig, tooltip = "text")
+```
+
+Чим далі праворуч від лінії загального GMROI знаходться товар, тим більш негативний вплив має цей товар на загальний GMROI.
+
+
+
+## Аналіз підрозділів
+
+```{r}
+cost_data_retail_subdiv_2022 <- cost_data_retail_2022 %>% 
+    group_by(subdiv_id) %>% 
+    summarise(subdiv_retail_cost = sum(item_cost_sum))
+
+cost_data_retail_subdiv_2021 <- cost_data_retail_2021 %>% 
+    group_by(subdiv_id) %>% 
+    summarise(subdiv_retail_cost = sum(item_cost_sum))
+
+root_items_2022 <- sale_data_retail_2022 %>% 
+    distinct(item_id) %>%
+    union(distinct(sale_data_service_2022, item_id)) %>% 
+    root_parent()
+
+root_items_2021 <- sale_data_retail_2021 %>% 
+    distinct(item_id) %>%
+    union(distinct(sale_data_service_2021, item_id)) %>% 
+    root_parent()
+
+sale_retail_subdiv_2022 <- sale_data_retail_2022 %>% 
+    left_join(root_items_2022) %>% 
+    filter(!root %in% c("000500558", "000300000", "000400010")) %>% 
+    group_by(subdiv_id) %>% 
+    summarise(subdiv_sum = sum(item_sum),
+              subdiv_retail_qty = sum(item_qty)) %>% 
+    filter(subdiv_retail_qty != 0) %>% 
+    left_join(cost_data_retail_subdiv_2022, by = "subdiv_id") %>% 
+    mutate(subdiv_retail_profit = subdiv_sum - subdiv_retail_cost)
+
+sale_retail_subdiv_2021 <- sale_data_retail_2021 %>% 
+    left_join(root_items_2021) %>% 
+    filter(!root %in% c("000500558", "000300000", "000400010")) %>% 
+    group_by(subdiv_id) %>% 
+    summarise(subdiv_sum = sum(item_sum),
+              subdiv_retail_qty = sum(item_qty)) %>% 
+    filter(subdiv_retail_qty != 0) %>% 
+    left_join(cost_data_retail_subdiv_2021, by = "subdiv_id") %>% 
+    mutate(subdiv_retail_profit = subdiv_sum - subdiv_retail_cost)
+
+retail_store <- ref_store %>% 
+    filter(!is.na(store_location),
+           !is.na(subdiv_id)) %>% 
+    arrange(subdiv_id, store_id) %>% 
+    select(subdiv_id, store_id) %>% 
+    distinct(subdiv_id, .keep_all = TRUE) %>% 
+    filter(subdiv_id %in% unique(sale_retail_subdiv_2022$subdiv_id))
+
+sale_service_subdiv_2022 <- sale_data_service_2022 %>% 
+    filter(store_id %in% retail_store$store_id) %>% 
+    left_join(root_items_2022) %>% 
+    filter(!root %in% c("000500558", "000300000", "000400010")) %>% 
+    group_by(subdiv_id) %>% 
+    summarise(subdiv_sum = sum(item_sum),
+              subdiv_service_cost = sum(item_cost_sum),
+              subdiv_service_qty = sum(item_qty)) %>% 
+    filter(subdiv_service_qty != 0) %>% 
+    mutate(subdiv_service_profit = subdiv_sum - subdiv_service_cost)
+
+sale_service_subdiv_2021 <- sale_data_service_2021 %>% 
+    filter(store_id %in% retail_store$store_id) %>% 
+    left_join(root_items_2021) %>% 
+    filter(!root %in% c("000500558", "000300000", "000400010")) %>% 
+    group_by(subdiv_id) %>% 
+    summarise(subdiv_sum = sum(item_sum),
+              subdiv_service_cost = sum(item_cost_sum),
+              subdiv_service_qty = sum(item_qty)) %>% 
+    filter(subdiv_service_qty != 0) %>% 
+    mutate(subdiv_service_profit = subdiv_sum - subdiv_service_cost)
+
+inventory_subdiv_2022 <- inventory_data_2022 %>% 
+    filter(store_id %in% retail_store$store_id) %>% 
+    left_join(retail_store) %>% 
+    left_join(root_items_2022) %>% 
+    filter(!root %in% c("000500558", "000300000", "000400010")) %>% 
+    group_by(date, subdiv_id) %>% 
+    summarise(subdiv_balance_sum = sum(total_item_sum)) %>% 
+    group_by(subdiv_id) %>%
+    summarise(subdiv_avr_balance_2022 = mean(subdiv_balance_sum, na.rm = TRUE))
+
+inventory_subdiv_2021 <- inventory_data_2021 %>% 
+    filter(store_id %in% retail_store$store_id) %>% 
+    left_join(retail_store) %>% 
+    left_join(root_items_2021) %>% 
+    filter(!root %in% c("000500558", "000300000", "000400010")) %>% 
+    group_by(date, subdiv_id) %>% 
+    summarise(subdiv_balance_sum = sum(total_item_sum)) %>% 
+    group_by(subdiv_id) %>%
+    summarise(subdiv_avr_balance_2021 = mean(subdiv_balance_sum, na.rm = TRUE))
+
+gmroi_subdiv_2022 <- sale_retail_subdiv_2022 %>% 
+    filter(!subdiv_id %in% "000000234") %>% 
+    left_join(sale_service_subdiv_2022, by = "subdiv_id") %>% 
+    mutate(across(where(is.numeric), replace_na, 0)) %>% 
+    mutate(subdiv_profit_2022 = subdiv_service_profit + subdiv_retail_profit,
+           subdiv_cost   = subdiv_service_cost + subdiv_retail_cost) %>% 
+    select(subdiv_id, subdiv_profit_2022, subdiv_cost) %>% 
+    left_join(inventory_subdiv_2022, by = "subdiv_id") %>%
+    mutate(gmroi_2022 = round(subdiv_profit_2022 / subdiv_avr_balance_2022, 2),
+           inv_turnover_2022 = round(1 / (subdiv_cost / subdiv_avr_balance_2022) * 360,1)) %>% 
+    left_join(select(ref_subdiv, subdiv_id, subdiv_name),
+              by = "subdiv_id")
+
+gmroi_subdiv_2021 <- sale_retail_subdiv_2021 %>% 
+    left_join(sale_service_subdiv_2021, by = "subdiv_id") %>% 
+    mutate(across(where(is.numeric), replace_na, 0)) %>% 
+    mutate(subdiv_profit_2021 = subdiv_service_profit + subdiv_retail_profit,
+           subdiv_cost   = subdiv_service_cost + subdiv_retail_cost) %>% 
+    select(subdiv_id, subdiv_profit_2021, subdiv_cost) %>% 
+    left_join(inventory_subdiv_2021, by = "subdiv_id") %>%
+    mutate(gmroi_2021 = round(subdiv_profit_2021 / subdiv_avr_balance_2021, 2),
+           inv_turnover_2021 = round(1 / (subdiv_cost / subdiv_avr_balance_2021) * 360,1)) %>% 
+    left_join(select(ref_subdiv, subdiv_id, subdiv_name),
+              by = "subdiv_id")
+
+gmroi_subdiv_2022 %>%
+
+    left_join(select(gmroi_subdiv_2021, subdiv_name, gmroi_2021),
+              by = "subdiv_name") %>% 
+    mutate(subdiv_name = str_replace(subdiv_name, "[Рр]оздріб$", "")) %>% 
+    mutate(subdiv_name = fct_reorder(subdiv_name, gmroi_2022),
+           col_var = ifelse(gmroi_2022 > gmroi_2021,
+                            "1", "0")) %>% 
+    
+    ggplot(aes(x = gmroi_2021, xend = gmroi_2022, y = subdiv_name,
+               group = subdiv_name)) +
+    
+    geom_dumbbell(aes(color = col_var),
+        colour_x = "#a3c4dc",
+        colour_xend = "#0e668b",
+        size = 4,
+        #size_xend = 4,
+        dot_guide = TRUE,
+        dot_guide_size = 0.15,
+        dot_guide_colour = "grey60"
+    ) +
+    scale_color_manual(values = c( "#a3c4dc", "#0e668b")) +
+    labs(title = "<span style='font-size:12pt'>GMROI підрозділів у
+                  <span style='color:#a3c4dc;'>2021</span> та
+                  <span style='color:#0e668b;'>2022</span>рр.",
+         x = "", y = "", color = "") +
+    tidyquant::theme_tq() +
+    theme(plot.title = element_markdown(),
+          plot.subtitle = element_markdown(),
+          legend.position = "none",
+          panel.grid.minor = element_blank(),
+          panel.grid.major.y = element_blank(),
+          panel.grid.major.x = element_line(),
+          axis.ticks = element_blank(),
+          panel.border = element_blank())
+```
+
+
+Знову ж таки поріняємо зміни валового прибутку та середніх залишків по кожному підрозділу:
+
+
+```{r}
+gmroi_subdiv_2022_change <- gmroi_subdiv_2022 %>% 
+    left_join(select(gmroi_subdiv_2021, subdiv_name, subdiv_profit_2021,
+                     subdiv_avr_balance_2021)) %>% 
+    mutate(profit_change = round(subdiv_profit_2022 /
+                                     subdiv_profit_2021 - 1, 2),
+           avr_balance_change = round(subdiv_avr_balance_2022 /
+                                          subdiv_avr_balance_2021 - 1, 2))
+
+
+avr_profit_change <- sum(gmroi_subdiv_2022_change$category_profit_2022) /
+    sum(gmroi_category_2022_change$category_profit_2021) - 1
+    
+avr_balance_change <- sum(gmroi_category_2022_change$category_avr_balance_2022) /
+    sum(gmroi_category_2022_change$category_avr_balance_2021) - 1
+    
+gmroi_subdiv_2022_change %>% 
+    select(subdiv_name, profit_change, avr_balance_change) %>% 
+    pivot_longer(cols = 2:3,
+                 names_to = "type",
+                 values_to = "value") %>% 
+    
+    ggplot(aes(x = value, y = subdiv_name)) +
+    geom_linerange(aes(xmin = ifelse(value > 0,
+                                     0,
+                                     value),
+                       xmax = ifelse(value < 0,
+                                     0,
+                                     value),
+                   color = type),
+                   size=1.5, alpha=0.5, position = position_dodge(width = 0.6))+
+    geom_point(aes(x = value, color = type), size = 3,
+               position = position_dodge(width = 0.6)) +
+    # geom_vline(xintercept = avr_profit_change, color = 'forestgreen', size = 1) +
+    # geom_text(x = avr_profit_change + 0.05, y = "06. Успішний керівник",
+    #           label = "Загальне", angle = 90, size = 2.5, color = 'forestgreen') +
+    # geom_vline(xintercept = avr_balance_change, color = 'gold', size = 1) +
+    theme_light() +
+    scale_x_continuous(label = scales::percent,
+                       expand = c(0, 0)) +
+    scale_color_manual(labels = c('залишки', 'прибуток'),
+                       values = c('gold', 'forestgreen')) +
+    labs(x = '', y = '', color = '') +
+    theme(legend.position = "top",
+          panel.grid.major.y = element_blank(), 
+          panel.border = element_blank(),
+          axis.ticks.y = element_blank(),
+          # legend.text.align = 0.1,
+          # legend.spacing.x = unit(0.3, 'cm')
+          )
+```
+
+
+Проведемо більш детальний аналіз в розрізі підрозділ/категорійний напрямок:
+
+```{r}
+cost_retail_subdiv_item_2022 <- cost_data_retail_2022 %>% 
+    group_by(subdiv_id, item_id) %>% 
+    summarise(subdiv_item_retail_cost = sum(item_cost_sum))
+
+sale_retail_subdiv_category_2022 <- sale_data_retail_2022 %>% 
+    group_by(subdiv_id, item_id) %>% 
+    summarise(subdiv_item_sum = sum(item_sum),
+              subdiv_item_retail_qty = sum(item_qty)) %>% 
+    filter(subdiv_item_retail_qty != 0) %>% 
+    
+    left_join(select(ref_items, item_id, group_id)) %>% 
+    left_join(select(ref_item_group, group_id, category_name)) %>% 
+    filter(!is.na(category_name),
+           !category_name %in% "15. Копіцентр") %>%
+    
+    left_join(cost_retail_subdiv_item_2022,
+              by = c("subdiv_id", "item_id")) %>% 
+    replace_na(list(subdiv_item_retail_cost = 0)) %>% 
+    mutate(subdiv_item_retail_profit = subdiv_item_sum - subdiv_item_retail_cost) %>% 
+ 
+    group_by(subdiv_id, category_name) %>% 
+    summarise(subdiv_category_retail_profit = sum(subdiv_item_retail_profit),
+              subdiv_category_retail_cost = sum(subdiv_item_retail_cost)) 
+
+sale_service_subdiv_category_2022 <- sale_data_service_2022 %>% 
+    filter(store_id %in% retail_store$store_id) %>% 
+    left_join(select(ref_items, item_id, group_id)) %>% 
+    left_join(select(ref_item_group, group_id, category_name)) %>% 
+    filter(!is.na(category_name),
+           !category_name %in% "15. Копіцентр") %>%
+    
+    group_by(subdiv_id, category_name) %>% 
+    summarise(subdiv_category_sum = sum(item_sum),
+              subdiv_category_service_cost = sum(item_cost_sum)) %>% 
+    ungroup() %>% 
+    mutate(subdiv_category_service_profit = subdiv_category_sum -
+               subdiv_category_service_cost) %>% 
+    select(-subdiv_category_sum)
+
+inventory_subdiv_category_2022 <- inventory_data_2022 %>% 
+    filter(store_id %in% retail_store$store_id) %>% 
+    left_join(select(ref_items, item_id, group_id)) %>% 
+    left_join(select(ref_item_group, group_id, category_name)) %>% 
+    filter(!is.na(category_name),
+           !category_name %in% "15. Копіцентр") %>%
+    
+    group_by(date, store_id, category_name) %>% 
+    summarise(store_category_balance_sum = sum(total_item_sum)) %>% 
+    group_by(store_id, category_name) %>%
+    summarise(subdiv_category_avr_balance = mean(store_category_balance_sum,
+                                                 na.rm = TRUE)) %>% 
+    ungroup() %>% 
+    left_join(retail_store) %>% 
+    select(-store_id)
+
+gmroi_subdiv_category_2022 <- sale_retail_subdiv_category_2022 %>% 
+    filter(!subdiv_id %in% "000000234") %>% 
+    left_join(sale_service_subdiv_category_2022,
+              by = c("subdiv_id", "category_name")) %>% 
+    mutate(across(where(is.numeric), replace_na, 0)) %>% 
+    mutate(subdiv_category_profit = subdiv_category_service_profit +
+               subdiv_category_retail_profit,
+           subdiv_category_cost = subdiv_category_service_cost +
+               subdiv_category_retail_cost) %>% 
+    select(subdiv_id, category_name, subdiv_category_profit, subdiv_category_cost) %>% 
+    left_join(inventory_subdiv_category_2022,
+              by = c("subdiv_id", "category_name")) %>%
+    mutate(gmroi_2022 = round(subdiv_category_profit /
+                                  subdiv_category_avr_balance, 2),
+           inv_turnover_2022 = round(1 / (subdiv_category_cost /
+                                              subdiv_category_avr_balance) * 360
+                                     )) %>% 
+    left_join(select(ref_subdiv, subdiv_id, subdiv_name),
+              by = "subdiv_id")
+
+gmroi_subdiv_category_2022 %>% 
+    plotly::plot_ly(x =~ category_name, 
+            y =~ subdiv_name,
+            z =~ gmroi_2022,
+            type = "heatmap",
+            colors = colorRamp(c("yellow", "blueviolet")),
+            colorbar = list(title = "GMROI"),
+            hovertemplate = 'КН: %{x} <br> Підрозділ: %{y} <br> GMROI: %{z} <extra></extra>'
+    ) %>% 
+    plotly::layout(title = 'GMROI категорійних напрямків по підрозділам',
+                   xaxis = list(title = "", showticklabels = FALSE),
+                   yaxis = list(title = "", tickfont = list(size = 7)))
+```
+
+
+```{r}
+gmroi_subdiv_2022 %>%
+
+    left_join(select(gmroi_subdiv_2021, subdiv_name, inv_turnover_2021),
+              by = "subdiv_name") %>% 
+    mutate(subdiv_name = str_replace(subdiv_name, "[Рр]оздріб$", "")) %>% 
+    mutate(subdiv_name = fct_reorder(subdiv_name, inv_turnover_2022,
+                                     .desc = TRUE),
+           col_var = ifelse(inv_turnover_2022 > inv_turnover_2021,
+                            "1", "0")) %>% 
+    
+    ggplot(aes(x = inv_turnover_2021, xend = inv_turnover_2022, y = subdiv_name,
+               group = subdiv_name)) +
+    
+    geom_dumbbell(aes(color = col_var),
+        colour_x = "#a3c4dc",
+        colour_xend = "#0e668b",
+        size = 4,
+        #size_xend = 4,
+        dot_guide = TRUE,
+        dot_guide_size = 0.15,
+        dot_guide_colour = "grey60"
+    ) +
+    scale_color_manual(values = c("#0e668b", "#a3c4dc")) +
+    labs(title = "<span style='font-size:12pt'>Період обороту запасів підрозділів у
+                  <span style='color:#a3c4dc;'>2021</span> та
+                  <span style='color:#0e668b;'>2022</span>рр.",
+         x = "", y = "") +
+    tidyquant::theme_tq() +
+    theme(plot.title = element_markdown(),
+          plot.subtitle = element_markdown(),
+          legend.position = "none",
+          panel.grid.minor = element_blank(),
+          panel.grid.major.y = element_blank(),
+          panel.grid.major.x = element_line(),
+          axis.ticks = element_blank(),
+          panel.border = element_blank())
+```
+
+
+```{r}
+gmroi_subdiv_category_2022 %>% 
+    plotly::plot_ly(x =~ category_name, 
+            y =~ subdiv_name,
+            z =~ inv_turnover_2022,
+            type = "heatmap",
+            colors = colorRamp(c("blueviolet", "yellow")),
+            colorbar = list(title = ""),
+            hovertemplate = 'КН: %{x} <br> Підрозділ: %{y} <br> Період обороту: %{z} <extra></extra>'
+    ) %>% 
+    plotly::layout(title = 'Період обороту категорійних напрямків по підрозділам',
+                   xaxis = list(title = "", showticklabels = FALSE),
+                   yaxis = list(title = "", tickfont = list(size = 7)))
+```
+
+
+## Висновки
+
+Незначне зростаняя загального GMROI з `r total_gmroi_2021` у 2021р. до `r total_gmroi_2022` у 2022р. відбулося в основному за рахунок збільшення націнки на категорію "01. Папір офісний" у середені року (березень - липень), однак у останні місяці року вона зменшилась у 2 рази, що може мати негативний вплив на значення GMROI у 2023р.
+
+Очевидь, що для покращення загального GMROI в першу чергу треба зосередитись на групах та категоріях з найвищими залишками, а також на підрозділах з найвищими залишками - супермаркетах (у 2022 у 4 з них GMROI погіршився). 

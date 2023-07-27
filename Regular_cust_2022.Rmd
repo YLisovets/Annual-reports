@@ -1,0 +1,179 @@
+---
+title: "Аналіз власників дисконтних карток за 2022р."
+output:
+   html_document:
+     theme: flatly
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE, out.width = '100%')
+
+library(tidyverse)
+library(lubridate)
+
+source("script/collect_data.R")
+
+date_finish <- as.Date("2023-01-01")
+```
+
+```{r}
+# sale_data <- sale_retail_data_common_fn(date_finish - years(2) + years(2000),
+#                                         date_finish + years(2000))
+# 
+# write_rds(sale_data, "data/sale_data.rds")
+sale_data <- read_rds("data/sale_data.rds")
+
+# regular_cust_data <- retail_regular_data_fn(date_finish - years(5) +years(2000),
+#                                             date_finish + years(2000))
+# 
+# write_rds(regular_cust_data, "data/regular_cust_data.rds")
+regular_cust_data <- read_rds("data/regular_cust_data.rds")
+```
+
+
+Проведемо загальний аналіз акивності власників дисконтних карток у Тернопільському супермаркеті
+
+```{r}
+ternopil_data <- sale_data %>% 
+    filter(subdiv_id %in% "000000093") %>% 
+    mutate(year = year(date) - 2000,
+           month = month(date, label = TRUE)) %>% 
+    group_by(year, month) %>% 
+    summarise(total_checks_nmbr = sum(total_checks_nmbr),
+              reg_customer_nmbr = sum(doc_reg_cust_nmbr, na.rm = TRUE)) %>% 
+    ungroup() %>% 
+    mutate(reg_customer_share = round(reg_customer_nmbr / total_checks_nmbr, 2))
+
+
+ternopil_data %>% 
+    ggplot(aes(x = month, y = reg_customer_nmbr, fill = factor(year))) + 
+    geom_col(position = "dodge") +
+    geom_text(data = filter(ternopil_data, year == 2021),
+              aes(label = scales::percent(reg_customer_share)),
+              vjust = .95, hjust = .9,
+              size = 3.5) +
+    geom_text(data = filter(ternopil_data, year == 2022),
+              aes(label = scales::percent(reg_customer_share)),
+              hjust = -.35,
+              vjust = -.1,
+              size = 3.5) +
+    scale_y_continuous(expand = c(0, 0)) +
+    coord_flip() +
+    scale_fill_manual(values = c('#96adbd', '#425e72')) +
+    theme_minimal() +
+    labs(x = "", y = "Кіл-ть постійних покупців", fill = "Рік",
+         title = "Кількість постійних покупців щомісяця у 2021-22рр.") +
+    theme(panel.grid.major.y = element_blank())
+```
+
+
+Проведемо аналіз активності за роком видачі картки:
+
+```{r}
+regular_cust_ternopil <- regular_cust_data %>% 
+    filter(subdiv_id == "000000093") %>% 
+    left_join(ref_disc_card, by = "card_nmbr") %>%
+    mutate(card_year = year(issue_date) - 2000,
+           date = as_date(date) - years(2000),
+           date = floor_date(date, unit = "month")) %>% 
+    filter(card_sum > 0,
+           date > as_date("2019-12-31")) %>% 
+    mutate(card_year = as.character(card_year),
+           card_year = ifelse(as.integer(card_year)<2020L | is.na(card_year),
+                              "2019-",
+                              card_year))
+
+
+regular_cust_by_year <- regular_cust_ternopil %>% 
+    mutate(year = year(date)) %>% 
+    group_by(year, card_year) %>% 
+    summarise(total_customers = n_distinct(card_nmbr)) %>% 
+    ungroup() %>% 
+    filter(!(year == 2021 & card_year == "2022"),
+           !(year == 2020 & card_year == "2021"))
+
+regular_cust_by_year%>% 
+    ggplot(aes(x = factor(year), y = total_customers, fill = card_year)) +
+    geom_col(position = "stack") +
+
+    geom_text(aes(y = total_customers, label = scales::comma(total_customers)),
+              position = position_stack(vjust = 0.5),
+              check_overlap = TRUE,
+              vjust = 1, size = 3) +
+    coord_flip() +
+    scale_y_continuous(labels = scales::comma) +
+    scale_fill_brewer(palette = "Set3") +
+    theme_minimal() +
+    labs(x = "", y = "Кількість покупців", fill = "Рік карти",
+         title = "Кількість покупців з бонусними картками по рокам") +
+    theme(
+          panel.grid.major.y = element_blank()
+    )
+```
+
+
+Невідомо, як надається картка покупцю - під час 1-ої покупки, чи після неї, але судячи з наведених даних скоріше за все після. Тому для карток, виданих поточного року, ми бачимо тільки наступну покупку власника карти.
+
+У 2022р. ми бачимо значне скорочення як загальної кількості чеків власників карток постійних клієнтів, так і "повернення" власників карток, виданих поточного року.
+
+Таким чином, з кожним роком до нас повертається все меньша кількість власників карток, виданих у попередніх роках, а також з'являється все меньше нових власників. Чи пов'язано це із зменьшенням кількості видаваних карток щороку? По існуючим в 1С даним визначити це неможливо, так як нема чітких даних по кожному підрозділу.
+
+Проаналізуємо кількість чеків за рік у власників карток:
+
+
+```{r}
+regular_cust_year_checks <- regular_cust_ternopil %>% 
+    mutate(year = year(date)) %>%
+    count(year, card_nmbr) %>% 
+    ungroup() %>% 
+    left_join(select(ref_disc_card, card_nmbr, issue_date),
+              by = "card_nmbr") %>%
+    mutate(card_year = year(issue_date) - 2000) %>% 
+    mutate(card_year = as.character(card_year),
+           card_year = ifelse(as.integer(card_year)<2020L | is.na(card_year),
+                              "2019-",
+                              card_year)) %>% 
+    filter(!(year == 2021 & card_year == "2022"),
+           !(year == 2020 & card_year == "2021")) %>% 
+    filter(year > 2020)
+
+highcharter::hcboxplot(x = regular_cust_year_checks$n,
+                       var2 = regular_cust_year_checks$card_year,
+                       var = factor(regular_cust_year_checks$year),
+                       outliers = FALSE) %>% 
+    highcharter::hc_title(
+        text = "Кількість чеків власників дисконтних карток за рік",
+        margin = 20,
+        align = "left")
+```
+
+Ми бачимо, що тільки власники карток, виданих по 2019 рік включно, здійснюють в середньому 2 покупки на рік, а у всіх нових власників - в середньому лише 1 покупка. Але і у цієї групи (2019-) в 2022р. для 25% найактивніших власників середня кількість покупок зменшилась з 4 до 3.
+
+Цікаво, якщо більшість власників карток здійснюють лише 1-у покупку, чи припадає їх активність на шкільний сезон(серпень - вересень).
+
+```{r}
+ternopil_2021_data <- regular_cust_ternopil %>% 
+    mutate(year = year(date)) %>%
+    filter(year == 2021)
+
+total_customers_2021 <- ternopil_2021_data %>%
+    summarise(n_distinct(card_nmbr)) %>% pull()
+
+season_customers_2021 <- ternopil_2021_data %>%
+    filter(date %in% c(as_date("2021-08-01"), as_date("2021-09-01"))) %>% 
+    summarise(n_distinct(card_nmbr)) %>% pull()
+
+
+ternopil_2022_data <- regular_cust_ternopil %>% 
+    mutate(year = year(date)) %>%
+    filter(year == 2022)
+
+total_customers_2022 <- ternopil_2022_data %>%
+    summarise(n_distinct(card_nmbr)) %>% pull()
+
+season_customers_2022 <- ternopil_2022_data %>%
+    filter(date %in% c(as_date("2022-08-01"), as_date("2022-09-01"))) %>% 
+    summarise(n_distinct(card_nmbr)) %>% pull() 
+```
+
+З загальної кількості унікальних власників карток у 2021 (`r total_customers_2021`) у шільний сезон здійснили свої покупки `r season_customers_2021`, що складає `r round(season_customers_2021/total_customers_2021*100)`%. У 2022р. ці показники мали наступні значення - `r season_customers_2022` з `r total_customers_2022`, тобто `r round(season_customers_2022/total_customers_2022*100)`%, тобто майже половина власників відвідують нас саме під час шкільного сезону.
